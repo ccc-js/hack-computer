@@ -1,0 +1,11 @@
+{
+  "name": "hack-computer",
+  "version": "0.1.0",
+  "description": "JavaScript 版 Nand2Tetris 全工具鏈＋RISC-V 後端（32-bit）",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/",
+    "build": "node tools/build.js"
+  },
+  "license": "MIT"
+}
