@@ -568,6 +568,10 @@
       err: document.getElementById('fpgaErr'),
       replay: document.getElementById('synReplay'),
       finalBtn: document.getElementById('synFinal'),
+      reportBtn: document.getElementById('synReport'),
+      lutArea: document.getElementById('fpgaLutArea'),
+      reportArea: document.getElementById('fpgaReportArea'),
+      reportText: document.getElementById('synReportText'),
       close: document.getElementById('synClose'),
     };
     if (!sEl.btn) return;
@@ -603,6 +607,8 @@
         const { lib, top } = currentLibAndTop();
         const exp = elab(lib, top);
         const syn = new H.MicroSyn();
+        const flat = syn.flattenChip(exp, exp.chips[exp.names[top]]);
+        const opt = syn.optimizeGates(flat);
         const netlist = syn.synthesize(exp, top);
         const snapshots = [];
         const pnr = new H.MicroPnR({ onSample: (rec) => snapshots.push(rec) });
@@ -610,7 +616,7 @@
         const cellById = {};
         for (const lut of netlist.luts) cellById[lut.id] = lut;
         for (const dff of netlist.dffs) cellById[dff.id] = dff;
-        S = { netlist, result, snapshots, cellById, top, nets: collectNets(netlist) };
+        S = { netlist, result, snapshots, cellById, top, nets: collectNets(netlist), stages: { flat, opt } };
         mode = 'final';
         selectedCell = null;
         stopAnim();
@@ -969,6 +975,51 @@
 
     sEl.btn.onclick = runSyn;
     sEl.close.onclick = () => { stopAnim(); sEl.overlay.classList.add('hidden'); };
+    let reportMode = false;
+    sEl.reportBtn.onclick = () => {
+      reportMode = !reportMode;
+      sEl.reportBtn.textContent = reportMode ? '⌨ 報告開啟中 ✓' : '⌨ 合成報告';
+      sEl.lutArea.classList.toggle('hidden', reportMode);
+      sEl.reportArea.classList.toggle('hidden', !reportMode);
+      if (reportMode) {
+        if (!S) {
+          sEl.reportText.textContent = '（尚未合成：先按「合成 LUT」跑一次，才會有報告。）';
+          return;
+        }
+        const netlist = S.netlist;
+        let flat = S.stages?.flat, opt = S.stages?.opt;
+        if (!flat || !opt) {
+          try {
+            const { lib, top } = currentLibAndTop();
+            const exp = elab(lib, top);
+            const syn = new H.MicroSyn();
+            flat = syn.flattenChip(exp, exp.chips[exp.names[top]]);
+            opt = syn.optimizeGates(flat);
+          } catch (e) {
+            sEl.reportText.textContent = `（階段資料缺漏且重算失敗：${e.message}）`;
+            return;
+          }
+        }
+        const lines = [
+          `// 合成報告：${netlist.chipName}（micro-yosys）`,
+          `// [1] Flatten   位元級 NAND/DFF：${flat.gates.length} 閘、${flat.primaryInputs.length} PI、${flat.primaryOutputs.length} PO`,
+          `// [2] Optimize  常數傳遞／雙重否定／清理後：${opt.gates.length} 閘（省 ${flat.gates.length - opt.gates.length}）`,
+          `// [3] Techmap   ${netlist.luts.length} 顆 LUT4 ＋ ${netlist.dffs.length} 顆 DFF`,
+          '',
+          'INPUTS  ' + netlist.inputs.join(', '),
+          'OUTPUTS ' + netlist.outputs.join(', '),
+          '',
+          '// LUT 清單：inputs ↔ init 第 i 位元欄',
+          ...netlist.luts.map((l) => `${l.id}  out=${l.out.padEnd(22).slice(0, 22)}  inputs=(${l.inputs.join(',')})  init=${l.hex}`),
+          '',
+          '// DFF 清單',
+          ...netlist.dffs.map((d) => `${d.id}  in=${d.in.padEnd(22).slice(0, 22)}  out=${d.out}`),
+          '',
+          `// 統計：raw ${netlist.stats.rawGates} 閘 → LUT ${netlist.stats.lutCount}＋DFF ${netlist.stats.dffCount}`,
+        ];
+        sEl.reportText.textContent = lines.join('\n');
+      }
+    };
     sEl.replay.onclick = startAnim;
     sEl.finalBtn.onclick = () => { stopAnim(); mode = 'final'; sEl.replay.textContent = '▶ 退火動畫'; draw(); };
     sEl.canvas.onclick = (ev) => {

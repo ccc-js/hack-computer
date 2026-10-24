@@ -191,7 +191,7 @@ describe('schematic dist 整合', () => {
     assert.match(h, /id="graphSvgWrap"/);
     assert.match(h, /id="graphSide"/);
     assert.match(h, /embed\.js\?v=19/);
-    assert.match(h, /hdl\.js\?v=19/);
+    assert.match(h, /hdl\.js\?v=22/);
   });
 
   it('hdl.html 有平移縮放控制（pan 容器＋縮放鈕）', () => {

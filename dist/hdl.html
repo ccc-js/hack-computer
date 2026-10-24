@@ -146,7 +146,7 @@
 <script src="corpus.js?v=14"></script>
 <script src="hdl-rt.js?v=10"></script>
 <script src="embed.js?v=19"></script>
-<script src="hdl.js?v=19"></script>
+<script src="hdl.js?v=22"></script>
 <div id="graphOverlay" class="hidden">
   <div id="graphBar">
     <h1>電路圖</h1>
@@ -181,14 +181,20 @@
       <div id="synAction">
         <button id="synReplay" title="重播模擬退火佈局動畫（連線越來越短）">▶ 退火動畫</button>
         <button id="synFinal" title="顯示最終繞線＋紅色 Critical Path＋Fmax">⏭ 繞線/時序</button>
+        <button id="synReport" title="右側切換合成過程文字報告（展平→化簡→LUT 清單）">⌨ 合成報告</button>
       </div>
       <div id="canvasHint">點格子看 LUT／DFF 真值表；紅色為 Critical Path；金框為 I/O Pad</div>
     </div>
     <div id="fpgaSide">
-      <h3 id="synSelTitle">LUT / DFF</h3>
-      <div id="synSelBody"></div>
-      <h3>LUT 清單（點選）</h3>
-      <table id="synLuts"></table>
+      <div id="fpgaLutArea">
+        <h3 id="synSelTitle">LUT / DFF</h3>
+        <div id="synSelBody"></div>
+        <h3>LUT 清單（點選）</h3>
+        <table id="synLuts"></table>
+      </div>
+      <div id="fpgaReportArea" class="hidden">
+        <pre id="synReportText" style="color:#c9d4e2;font-size:11px;"></pre>
+      </div>
       <pre id="fpgaErr" class="hidden"></pre>
     </div>
   </div>
