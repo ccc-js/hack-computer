@@ -23,6 +23,7 @@
   label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #9fb2c8; }
   textarea { flex: 1; min-height: 90px; resize: none; line-height: 1.45; padding: 6px; }
   #banner { padding: 8px 12px; border-radius: 6px; font-weight: 700; }
+  .spacer { flex: 1; }
   #banner.pass { background: #1d3b2a; color: #6fe39a; border: 1px solid #2e7d4c; }
   #banner.fail { background: #46241f; color: #ff9b8a; border: 1px solid #a03a2b; }
   #outwrap { overflow: auto; flex: 1; min-height: 0; }
@@ -60,6 +61,31 @@
   .gbox.drill:hover rect.frame { stroke: #ffd479; stroke-width: 2.5; }
   .gbox text { font-family: inherit; }
 
+  /* v5.0 合成＋FPGA 佈局（synthesis → PnR → STA） */
+  #synOverlay { position: fixed; inset: 0; background: rgba(10,14,20,.82); z-index: 60; display: flex; flex-direction: column; }
+  #synOverlay.hidden { display: none; }
+  #synBar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: #232b36; border-bottom: 1px solid #3a4a5e; flex-wrap: wrap; }
+  #synBar h1 { font-size: 14px; margin: 0; }
+  #synStats { display: flex; gap: 14px; font-size: 12px; flex-wrap: wrap; }
+  #synStats b { color: #ffd479; font-weight: 600; }
+  #synStats .cr { color: #ff9b8a; }
+  #synBody { flex: 1; display: flex; min-height: 0; }
+  #canvasWrap { flex: 1; position: relative; overflow: hidden; background: #12161d; }
+  #fpgaCanvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; }
+  #canvasHint { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: #9fb2c8; pointer-events: none; }
+  #synAction { position: absolute; right: 10px; top: 8px; display: flex; gap: 6px; }
+  #fpgaSide { width: 340px; min-width: 260px; max-width: 380px; overflow: auto; background: #232b36; border-left: 1px solid #3a4a5e; padding: 10px 12px; font-size: 12px; }
+  #fpgaSide h3 { font-size: 13px; margin: 10px 0 4px; color: #9fb2c8; }
+  #fpgaSide h3:first-child { margin-top: 0; }
+  #fpgaSide table { font-size: 12px; }
+  #fpgaSide table td { padding: 2px 8px; }
+  #synLuts { border-collapse: collapse; width: 100%; }
+  #synLuts tr.sel { background: #3d6ea0; }
+  #synLuts td.c1 { color: #ffd479; cursor: pointer; }
+  #fpgaTruth { color: #c9d4e2; }
+  #fpgaErr { color: #ffb3a5; white-space: pre-wrap; }
+  #animBar { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #9fb2c8; }
+
 </style>
 </head>
 <body>
@@ -93,6 +119,7 @@
     <input type="number" id="kbd" value="0" min="0" max="65535" style="width:64px"></label>
   <button id="run" title="跑完整支 .tst（codegen＋編譯，數秒）">執行</button>
   <button id="graph" title="檢視目前 .hdl 的電路圖，可逐層點入直到 Nand／DFF">檢視電路圖</button>
+  <button id="syn" title="合成到 LUT4＋模擬退火佈局＋繞線＋時序分析（Synthesis → PnR → STA）">合成 LUT</button>
   <span class="spacer"></span>
   <span id="status"></span>
 </header>
@@ -118,8 +145,8 @@
 </main>
 <script src="corpus.js?v=14"></script>
 <script src="hdl-rt.js?v=10"></script>
-<script src="embed.js?v=18"></script>
-<script src="hdl.js?v=15"></script>
+<script src="embed.js?v=19"></script>
+<script src="hdl.js?v=19"></script>
 <div id="graphOverlay" class="hidden">
   <div id="graphBar">
     <h1>電路圖</h1>
@@ -139,6 +166,31 @@
       </div>
     </div>
     <div id="graphSide"></div>
+  </div>
+</div>
+<div id="synOverlay" class="hidden">
+  <div id="synBar">
+    <h1>合成 → FPGA 佈局 / 繞線 / 時序</h1>
+    <div id="synStats"></div>
+    <span class="spacer"></span>
+    <button id="synClose">關閉 ✕</button>
+  </div>
+  <div id="synBody">
+    <div id="canvasWrap">
+      <canvas id="fpgaCanvas"></canvas>
+      <div id="synAction">
+        <button id="synReplay" title="重播模擬退火佈局動畫（連線越來越短）">▶ 退火動畫</button>
+        <button id="synFinal" title="顯示最終繞線＋紅色 Critical Path＋Fmax">⏭ 繞線/時序</button>
+      </div>
+      <div id="canvasHint">點格子看 LUT／DFF 真值表；紅色為 Critical Path；金框為 I/O Pad</div>
+    </div>
+    <div id="fpgaSide">
+      <h3 id="synSelTitle">LUT / DFF</h3>
+      <div id="synSelBody"></div>
+      <h3>LUT 清單（點選）</h3>
+      <table id="synLuts"></table>
+      <pre id="fpgaErr" class="hidden"></pre>
+    </div>
   </div>
 </div>
 </body>

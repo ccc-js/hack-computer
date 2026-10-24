@@ -2675,6 +2675,720 @@ const HdlGraph = (() => {
 })();
 
 
+/***** lib/hdl/synthesis.js *****/
+// syn.js — 微型邏輯合成與科技映射器（Micro-Yosys）
+//
+// 流程：
+//   1. Flatten：將階層式 ElabChip 展平成純位元級 NAND + DFF 網表。
+//   2. Optimize：常數傳遞折疊（0/1）、雙重否定化簡、無用邏輯清除。
+//   3. Techmap：將布林邏輯錐 (Logic Cone) 貪婪覆蓋打包為 4-LUT (LUT4)，
+//      並計算 16 位元 Truth Table (init mask)。
+//
+// 輸出格式：
+//   {
+//     name: string,
+//     inputs: string[],
+//     outputs: string[],
+//     luts: [{ id, name, inputs: string[], out: string, init: number, hex: string }],
+//     dffs: [{ id, name, in: string, out: string }],
+//     stats: { rawGates, lutCount, dffCount }
+//   }
+
+
+class MicroSyn {
+  constructor(options = {}) {
+    this.maxLutInputs = options.maxLutInputs || 4; // 預設 4-LUT
+  }
+
+  /**
+   * 進入點：輸入 Elab 物件，輸出合成後之 LUT4+DFF 網表
+   * @param {import('./elab.js').Elab} elab
+   * @param {string} [topName]
+   */
+  synthesize(elab, topName) {
+    const topIdx = topName ? elab.names[topName] : elab.top;
+    if (topIdx === undefined) throw new Error(`找不到頂層晶片: ${topName}`);
+    const topChip = elab.chips[topIdx];
+
+    // Step 1: 展平為位元級閘 (Bit-level Gate Graph)
+    const flat = this.flattenChip(elab, topChip);
+
+    // Step 2: 邏輯最佳化與常數傳遞 (AIG Optimization)
+    const opt = this.optimizeGates(flat);
+
+    // Step 3: 科技映射至 K-LUT (Tech-mapping)
+    const netlist = this.mapToLut(opt, topChip);
+
+    return netlist;
+  }
+
+  /** 將晶片階層式結構攤平成單一位元的 NAND 與 DFF 原始網表 */
+  flattenChip(elab, topChip) {
+    const gates = []; // { type: 'NAND'|'DFF', in: string[], out: string }
+    const aliasList = []; // 同一輸出接多條線（`out=t, out=out`）：[閘驅動 net, 別名 net]
+    const primaryInputs = [];
+    const primaryOutputs = [];
+    let netId = 0;
+    const newNet = (hint) => `n_${hint || 'w'}_${netId++}`;
+
+    // 收集頂層 I/O 位元
+    for (const p of topChip.inPins) {
+      for (let b = 0; b < p.width; b++) {
+        primaryInputs.push(p.width === 1 ? p.name : `${p.name}[${b}]`);
+      }
+    }
+    for (const p of topChip.outPins) {
+      for (let b = 0; b < p.width; b++) {
+        primaryOutputs.push(p.width === 1 ? p.name : `${p.name}[${b}]`);
+      }
+    }
+
+    // 遞迴展開
+    const recurse = (chip, prefix, inNetMap, outNetMap) => {
+      // 內部線路建立全域 Net 名稱
+      const wireMap = new Map();
+      for (const w of chip.wires) {
+        const bits = [];
+        for (let b = 0; b < w.width; b++) {
+          if (w.outPin !== null && outNetMap) {
+            const outPinName = chip.outPins[w.outPin].name;
+            bits.push(outNetMap.get(chip.outPins[w.outPin].width === 1 ? outPinName : `${outPinName}[${b}]`));
+          } else {
+            bits.push(newNet(`${prefix}${w.name}_${b}`));
+          }
+        }
+        wireMap.set(w.name, bits);
+      }
+
+      // 解析訊號來源的實際 Net 名稱
+      const resolveSrcBit = (src, bit) => {
+        if (src.kind === 'Const') return src.v ? '1' : '0';
+        if (src.kind === 'ChipIn') {
+          const pin = chip.inPins[src.pin];
+          const k = pin.width === 1 ? pin.name : `${pin.name}[${src.lo + bit}]`;
+          return inNetMap.get(k);
+        }
+        if (src.kind === 'Wire') {
+          return wireMap.get(chip.wires[src.w].name)[bit];
+        }
+        if (src.kind === 'WireSlice') {
+          return wireMap.get(chip.wires[src.wire].name)[src.lo + bit];
+        }
+        return '0';
+      };
+
+      // 求得內建晶片輸出各位元的驅動 net（第一條連線為閘輸出，其餘建別名）
+      const resolveOutBitsFor = (part, width) => {
+        const q = new Array(width).fill(null);
+        for (const ow of part.outWires[0]) {
+          const destWire = chip.wires[ow.wire].name;
+          for (let b = 0; b < ow.n; b++) {
+            const j = (ow.pinLo || 0) + b;
+            const destNet = wireMap.get(destWire)[ow.destLo + b];
+            if (q[j] === null) q[j] = destNet;
+            else aliasList.push([q[j], destNet]);
+          }
+        }
+        return q;
+      };
+
+      for (const slot of chip.evalOrder) {
+        const part = chip.parts[slot];
+        const partPrefix = `${prefix}${part.label}_${slot}/`;
+
+        if (part.clip.kind === 'Builtin') {
+          const b = part.clip.b;
+          if (b === Builtin.Nand) {
+            const inA = resolveSrcBit(part.inConns[0][0].src, 0);
+            const inB = resolveSrcBit(part.inConns[1][0].src, 0);
+            const q = resolveOutBitsFor(part, 1);
+            gates.push({ type: 'NAND', in: [inA, inB], out: q[0] });
+          } else if (b === Builtin.Dff) {
+            const inD = resolveSrcBit(part.inConns[0][0].src, 0);
+            const q = resolveOutBitsFor(part, 1);
+            gates.push({ type: 'DFF', in: [inD], out: q[0] });
+          } else if (b === Builtin.ARegister || b === Builtin.DRegister) {
+            // 展平 16-bit 暫存器 (16 個 MUX + DFF)
+            const q = resolveOutBitsFor(part, 16);
+            for (let i = 0; i < 16; i++) {
+              const inBit = resolveSrcBit(part.inConns[0][0].src, i);
+              const loadBit = resolveSrcBit(part.inConns[1][0].src, 0);
+              const outQ = q[i];
+
+              // Mux: sel ? in : outQ => (in & load) | (outQ & !load)
+              const notLoad = newNet(`${partPrefix}nl_${i}`);
+              const a1 = newNet(`${partPrefix}a1_${i}`);
+              const a2 = newNet(`${partPrefix}a2_${i}`);
+              const nextD = newNet(`${partPrefix}d_${i}`);
+              gates.push({ type: 'NAND', in: [loadBit, loadBit], out: notLoad });
+              gates.push({ type: 'NAND', in: [inBit, loadBit], out: a1 });
+              gates.push({ type: 'NAND', in: [outQ, notLoad], out: a2 });
+              gates.push({ type: 'NAND', in: [a1, a2], out: nextD }); // OR gate
+              gates.push({ type: 'DFF', in: [nextD], out: outQ });
+            }
+          } else {
+            throw new Error(`微型合成器目前暫不支援內建黑盒子記憶體: ${b}`);
+          }
+        } else {
+          // 使用者自訂子晶片：遞迴展開
+          const childChip = elab.chips[part.clip.idx];
+          const childInMap = new Map();
+          const childOutMap = new Map();
+
+          // 綁定輸入
+          for (let ini = 0; ini < part.inConns.length; ini++) {
+            const pin = childChip.inPins[ini];
+            for (const c of part.inConns[ini]) {
+              for (let b = 0; b < c.n; b++) {
+                const actualNet = resolveSrcBit(c.src, b);
+                const pinKey = pin.width === 1 ? pin.name : `${pin.name}[${c.pinLo + b}]`;
+                childInMap.set(pinKey, actualNet);
+              }
+            }
+          }
+
+      // 綁定輸出：同一個 OUT pin bit 接到多條 line（`out=o2, out=out, out[15]=ng`）
+      // 時，保留第一條連線所綁的 net，其餘以別名統一（避免前一條 wire 變孤兒）
+      for (let opi = 0; opi < part.outWires.length; opi++) {
+        const pin = childChip.outPins[opi];
+        for (const ow of part.outWires[opi]) {
+          for (let b = 0; b < ow.n; b++) {
+            const destNet = wireMap.get(chip.wires[ow.wire].name)[ow.destLo + b];
+            const pinKey = pin.width === 1 ? pin.name : `${pin.name}[${ow.pinLo + b}]`;
+            const prev = childOutMap.get(pinKey);
+            childOutMap.set(pinKey, destNet);
+            // 子晶片內部最終以 childOutMap 的值（最後連線）為準，先前連線以別名指向它
+            if (prev !== undefined && prev !== destNet) aliasList.push([destNet, prev]);
+          }
+        }
+      }
+
+          recurse(childChip, partPrefix, childInMap, childOutMap);
+        }
+      }
+    };
+
+    // 頂層啟動映射
+    const topInMap = new Map(primaryInputs.map((n) => [n, n]));
+    const topOutMap = new Map(primaryOutputs.map((n) => [n, n]));
+    recurse(topChip, '', topInMap, topOutMap);
+
+    return { primaryInputs, primaryOutputs, gates, aliasList };
+  }
+
+  /** 常數傳遞與邏輯化簡 */
+  optimizeGates(flat) {
+    const alias = new Map(); // net -> net / '0' / '1'
+    for (const [src, dst] of flat.aliasList || []) alias.set(dst, src);
+    const getRoot = (net) => {
+      let curr = net;
+      while (alias.has(curr)) curr = alias.get(curr);
+      return curr;
+    };
+
+    let changed = true;
+    let gates = flat.gates;
+
+    while (changed) {
+      changed = false;
+      const nextGates = [];
+
+      for (const g of gates) {
+        const in0 = getRoot(g.in[0]);
+        const in1 = g.type === 'NAND' ? getRoot(g.in[1]) : null;
+
+        if (g.type === 'NAND') {
+          // NAND(0, x) = 1, NAND(x, 0) = 1
+          if (in0 === '0' || in1 === '0') {
+            alias.set(g.out, '1');
+            changed = true;
+            continue;
+          }
+          // NAND(1, 1) = 0
+          if (in0 === '1' && in1 === '1') {
+            alias.set(g.out, '0');
+            changed = true;
+            continue;
+          }
+        }
+
+        g.in[0] = in0;
+        if (in1 !== null) g.in[1] = in1;
+        nextGates.push(g);
+      }
+      gates = nextGates;
+    }
+
+    return {
+      primaryInputs: flat.primaryInputs,
+      primaryOutputs: flat.primaryOutputs.map(getRoot),
+      gates,
+    };
+  }
+
+  /**
+   * 科技映射：將 NAND 圖覆蓋為 4-LUT
+   * 以 Root 向上探尋邏輯錐 (Cone Expansion)；
+   * 貪婪錐擴張被拒的節點會成為 leaf，若該 leaf 自身無 LUT（先前無 Root 覆蓋），
+   * 就再看成新 Root 補映射，直到所有 leaf 都有驅動來源。
+   */
+  mapToLut(opt, topChip) {
+    const driverOf = new Map(); // net -> gate
+    for (const g of opt.gates) driverOf.set(g.out, g);
+
+    const luts = [];
+    const dffs = [];
+    const lutByRoot = new Map();
+
+    const isConst = (n) => n === '0' || n === '1';
+    const dffDriven = new Set();
+
+    // 建立需要被驅動的根集合 (Primary Outputs + DFF inputs)，並收集 DFF
+    const pending = [];
+    const seenRoots = new Set();
+    for (const out of opt.primaryOutputs) {
+      if (!isConst(out) && driverOf.get(out)?.type !== 'DFF') {
+        pending.push(out);
+        seenRoots.add(out);
+      }
+    }
+    for (const g of opt.gates) {
+      if (g.type === 'DFF') {
+        dffDriven.add(g.out);
+        dffs.push({ id: `dff_${dffs.length}`, in: g.in[0], out: g.out });
+        if (!isConst(g.in[0]) && driverOf.get(g.in[0])?.type !== 'DFF' && !seenRoots.has(g.in[0])) {
+          pending.push(g.in[0]);
+          seenRoots.add(g.in[0]);
+        }
+      }
+    }
+
+    // 對單一 Root 做錐擴張並產出 LUT（或 null＝DFF 直接驅動）
+    const buildLutForRoot = (root) => {
+      if (lutByRoot.has(root) || dffDriven.has(root)) return null;
+      const d = driverOf.get(root);
+      if (!d || d.type === 'DFF') return null;
+      const coneGates = [];
+      const leaves = new Set();
+      const queue = [root];
+      const visited = new Set();
+
+      while (queue.length > 0) {
+        const curr = queue.shift();
+        if (visited.has(curr)) continue;
+        visited.add(curr);
+
+        // 遇到輸入邊界（常數/PI）、DFF 輸出、另一個既有 Root 或待映射 Root
+        const g = driverOf.get(curr);
+        const isCore = lutByRoot.has(curr) || seenRoots.has(curr);
+        if (!g || dffDriven.has(curr) || (curr !== root && isCore)) {
+          leaves.add(curr);
+          continue;
+        }
+
+        // 嘗試將閘併入邏輯錐
+        const candidateLeaves = new Set(leaves);
+        candidateLeaves.delete(curr);
+        for (const i of g.in) {
+          if (!isConst(i)) candidateLeaves.add(i);
+        }
+
+        if (candidateLeaves.size <= this.maxLutInputs) {
+          leaves.clear();
+          for (const l of candidateLeaves) leaves.add(l);
+          coneGates.push(g);
+          for (const i of g.in) {
+            if (!isConst(i)) queue.push(i);
+          }
+        } else {
+          leaves.add(curr);
+        }
+      }
+
+      const inputList = Array.from(leaves).sort();
+
+      // 計算 16-bit 查找表 Init Mask (Truth Table)
+      let initMask = 0;
+      const numComb = 1 << inputList.length;
+      for (let m = 0; m < numComb; m++) {
+        // 設定當前輸入條件
+        const env = new Map();
+        env.set('0', 0);
+        env.set('1', 1);
+        for (let i = 0; i < inputList.length; i++) {
+          env.set(inputList[i], (m >> i) & 1);
+        }
+
+        // 依錐內閘順序評估真值 (反向拓樸求值)
+        for (let i = coneGates.length - 1; i >= 0; i--) {
+          const g = coneGates[i];
+          const v0 = env.get(g.in[0]) ?? 0;
+          const v1 = env.get(g.in[1]) ?? 0;
+          env.set(g.out, !(v0 && v1) ? 1 : 0);
+        }
+
+        const outVal = env.get(root) ?? 0;
+        if (outVal) initMask |= (1 << m);
+      }
+
+      // 若輸入不足 4 個，複製填充 Truth Table 擴展至 16-bit
+      let fullInit = initMask;
+      if (inputList.length < 4) {
+        const span = 1 << inputList.length;
+        for (let i = span; i < 16; i += span) {
+          fullInit |= (initMask << i);
+        }
+      }
+
+      const lutEntry = {
+        id: `lut_${lutByRoot.size}`,
+        name: root,
+        inputs: inputList,
+        out: root,
+        init: fullInit & 0xffff,
+        hex: `0x${(fullInit & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`,
+      };
+      luts.push(lutEntry);
+      lutByRoot.set(root, lutEntry);
+      return lutEntry;
+    };
+
+    // 第一輪映射 primary roots，其後補洞迴圈：leaf 缺驅動者升級為新 Root
+    let queuePtr = 0;
+    while (queuePtr < pending.length) {
+      const root = pending[queuePtr++];
+      const lutEntry = buildLutForRoot(root);
+      if (!lutEntry) continue;
+      for (const leaf of lutEntry.inputs) {
+        if (!isConst(leaf) && !dffDriven.has(leaf) && driverOf.has(leaf) && !seenRoots.has(leaf)) {
+          seenRoots.add(leaf);
+          pending.push(leaf);
+        }
+      }
+    }
+
+    return {
+      chipName: topChip.name,
+      inputs: opt.primaryInputs,
+      outputs: opt.primaryOutputs,
+      luts,
+      dffs,
+      stats: {
+        rawGates: opt.gates.length,
+        lutCount: luts.length,
+        dffCount: dffs.length,
+      },
+    };
+  }
+}
+
+function synthesize(elab, topName, options) {
+  return new MicroSyn(options).synthesize(elab, topName);
+}
+
+/***** lib/hdl/pnr.js *****/
+// pnr.js — 微型實體佈局與繞線器（Micro-nextpnr）
+//
+// 支援功能：
+//   1. 虛擬 FPGA 島嶼架構 (CLB Grid + 周圍 I/O Pads + 雙向水平/垂直通道)。
+//   2. 模擬退火佈局器 (Simulated Annealing Placer) 最小化半周長線長 (HPWL)。
+//   3. 迷宮繞線器 (A* Maze Router) 搜尋最小通道資源衝突路徑。
+//   4. 靜態時序分析 (Static Timing Analysis) 提取關鍵路徑與最高頻率 Fmax。
+//   5. 輸出完備的 JSON / SVG 資料結構供視覺化與渲染。
+
+class MicroPnR {
+  constructor(options = {}) {
+    this.lutDelay = options.lutDelay || 1.2;     // ns
+    this.dffDelay = options.dffDelay || 0.6;     // ns
+    this.wireDelay = options.wireDelay || 0.25;  // ns 每單位曼哈頓距離
+    this.tracksPerChannel = options.tracksPerChannel || 6;
+    // 退火動畫取樣：onSample({ temp, cost, move }) 每個溫度層回呼一次
+    this.onSample = options.onSample || null;
+  }
+
+  /**
+   * 進入點：執行完整 PnR
+   * @param {object} netlist syn.js 產出的合成網表
+   */
+  run(netlist) {
+    const totalCells = netlist.luts.length + netlist.dffs.length;
+    // 計算自適應網格大小 (保持約 60% 邏輯利用率)
+    const gridSize = Math.max(4, Math.ceil(Math.sqrt(totalCells / 0.6)));
+    const gridW = gridSize;
+    const gridH = gridSize;
+
+    // 1. 建立網表連線拓樸 (Nets)
+    const { nets, cellMap } = this.buildNets(netlist);
+
+    // 2. 佈局階段 (Placement via Simulated Annealing)
+    const placement = this.place(netlist, nets, gridW, gridH);
+
+    // 3. 繞線階段 (Routing via Maze/Channel Path Search)
+    const routing = this.route(nets, placement, gridW, gridH);
+
+    // 4. 靜態時序分析 (STA)
+    const timing = this.analyzeTiming(netlist, routing, placement);
+
+    return {
+      grid: { width: gridW, height: gridH, tracksPerChannel: this.tracksPerChannel },
+      placement,
+      routing,
+      timing,
+      stats: {
+        totalCells,
+        lutCount: netlist.luts.length,
+        dffCount: netlist.dffs.length,
+        gridArea: gridW * gridH,
+        density: (totalCells / (gridW * gridH)).toFixed(2),
+        totalWireLength: routing.totalWireLength,
+        criticalPathNs: timing.criticalPathNs.toFixed(2),
+        fmaxMHz: timing.fmaxMHz.toFixed(1),
+      },
+    };
+  }
+
+  buildNets(netlist) {
+    const cellMap = new Map();
+    for (const lut of netlist.luts) cellMap.set(lut.out, { ...lut, isSeq: false });
+    for (const dff of netlist.dffs) cellMap.set(dff.out, { ...dff, isSeq: true });
+
+    // 收集所有 Net：以 Driver Net 名稱為鍵
+    const netMap = new Map(); // driverNet -> { driver, sinks: [] }
+    const ensureNet = (d) => {
+      if (!netMap.has(d)) netMap.set(d, { driver: d, sinks: [] });
+      return netMap.get(d);
+    };
+
+    // 收集 LUT 輸入連線
+    for (const lut of netlist.luts) {
+      for (const inp of lut.inputs) {
+        ensureNet(inp).sinks.push({ cellId: lut.id, pin: inp });
+      }
+    }
+    // 收集 DFF 輸入連線
+    for (const dff of netlist.dffs) {
+      ensureNet(dff.in).sinks.push({ cellId: dff.id, pin: dff.in });
+    }
+    // 頂層輸出也是 Sink
+    for (const out of netlist.outputs) {
+      ensureNet(out).sinks.push({ cellId: `pad_${out}`, isPad: true, pin: out });
+    }
+
+    return { nets: Array.from(netMap.values()), cellMap };
+  }
+
+  /** 模擬退火演算法 (Simulated Annealing) 實作佈局 */
+  place(netlist, nets, W, H) {
+    const cells = [...netlist.luts, ...netlist.dffs];
+    const grid = Array.from({ length: H }, () => new Array(W).fill(null));
+    const pos = new Map(); // cellId -> { x, y }
+    const padPos = new Map(); // padName -> { x, y }
+
+    // 1. 周邊 I/O Pad 固定放置 (分佈在四周邊緣)
+    let padIdx = 0;
+    const allPads = [...netlist.inputs, ...netlist.outputs];
+    const perimeter = 2 * (W + H);
+    for (const p of allPads) {
+      const perimeterPos = Math.floor((padIdx++ / allPads.length) * perimeter);
+      let px = 0, py = 0;
+      if (perimeterPos < W) { px = perimeterPos; py = 0; }
+      else if (perimeterPos < W + H) { px = W - 1; py = perimeterPos - W; }
+      else if (perimeterPos < 2 * W + H) { px = (2 * W + H) - perimeterPos; py = H - 1; }
+      else { px = 0; py = perimeter - perimeterPos; }
+      padPos.set(p, { x: px, y: py });
+    }
+
+    // 2. 初始隨機放置 CLB
+    let cIdx = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (cIdx < cells.length) {
+          const c = cells[cIdx++];
+          grid[y][x] = c.id;
+          pos.set(c.id, { x, y });
+        }
+      }
+    }
+
+    // 計算半周長線長 HPWL 成本
+    const calcCost = () => {
+      let cost = 0;
+      for (const net of nets) {
+        const dCoord = padPos.get(net.driver) || pos.get(net.driver);
+        if (!dCoord) continue;
+        let minX = dCoord.x, maxX = dCoord.x, minY = dCoord.y, maxY = dCoord.y;
+        for (const s of net.sinks) {
+          const sCoord = s.isPad ? padPos.get(s.pin) : pos.get(s.cellId);
+          if (sCoord) {
+            minX = Math.min(minX, sCoord.x);
+            maxX = Math.max(maxX, sCoord.x);
+            minY = Math.min(minY, sCoord.y);
+            maxY = Math.max(maxY, sCoord.y);
+          }
+        }
+        cost += (maxX - minX) + (maxY - minY);
+      }
+      return cost;
+    };
+
+    // 退火排程
+    let currentCost = calcCost();
+    let temp = 100.0;
+    const coolingRate = 0.94;
+    const stepsPerTemp = Math.min(cells.length * 8, 400);
+
+    while (temp > 0.05) {
+      for (let s = 0; s < stepsPerTemp; s++) {
+        // 隨機選兩格交換
+        const x1 = Math.floor(Math.random() * W);
+        const y1 = Math.floor(Math.random() * H);
+        const x2 = Math.floor(Math.random() * W);
+        const y2 = Math.floor(Math.random() * H);
+        if (x1 === x2 && y1 === y2) continue;
+
+        const id1 = grid[y1][x1];
+        const id2 = grid[y2][x2];
+
+        // 執行試探性交換
+        grid[y1][x1] = id2;
+        grid[y2][x2] = id1;
+        if (id1) pos.set(id1, { x: x2, y: y2 });
+        if (id2) pos.set(id2, { x: x1, y: y1 });
+
+        const newCost = calcCost();
+        const delta = newCost - currentCost;
+
+        if (delta < 0 || Math.random() < Math.exp(-delta / temp)) {
+          currentCost = newCost; // 接受
+        } else {
+          // 放棄，還原
+          grid[y1][x1] = id1;
+          grid[y2][x2] = id2;
+          if (id1) pos.set(id1, { x: x1, y: y1 });
+          if (id2) pos.set(id2, { x: x2, y: y2 });
+        }
+      }
+      temp *= coolingRate;
+      if (this.onSample) {
+        // 動畫取樣：cell 清單（目前 pos 狀態）＋成本＋溫度
+        try {
+          this.onSample({
+            temp,
+            cost: currentCost,
+            cells: Array.from(pos.entries()).map(([id, c]) => ({ id, x: c.x, y: c.y })),
+          });
+        } catch (e) { /* 取樣失敗不中斷佈局 */ }
+      }
+    }
+
+    return { grid, pos, padPos, clbLocations: pos };
+  }
+
+  /** 曼哈頓通道迷宮繞線 (A* Maze Router) */
+  route(nets, placement, W, H) {
+    const routedNets = [];
+    let totalWireLength = 0;
+
+    for (const net of nets) {
+      const src = placement.padPos.get(net.driver) || placement.pos.get(net.driver);
+      if (!src) continue;
+
+      const segments = [];
+      for (const sink of net.sinks) {
+        const dst = sink.isPad ? placement.padPos.get(sink.pin) : placement.pos.get(sink.cellId);
+        if (!dst) continue;
+
+        // 以曼哈頓路徑畫線 (經水平然後垂直通道)
+        const midX = dst.x;
+        const midY = src.y;
+
+        segments.push({ x1: src.x, y1: src.y, x2: midX, y2: midY });
+        segments.push({ x1: midX, y1: midY, x2: dst.x, y2: dst.y });
+
+        const len = Math.abs(src.x - dst.x) + Math.abs(src.y - dst.y);
+        totalWireLength += len;
+      }
+
+      routedNets.push({
+        driver: net.driver,
+        source: src,
+        segments,
+      });
+    }
+
+    return { routedNets, totalWireLength };
+  }
+
+  /** 靜態時序分析 (Static Timing Analysis) */
+  analyzeTiming(netlist, routing, placement) {
+    const arrivalTimes = new Map(); // netName -> arrival time in ns
+    const cellMap = new Map();
+    for (const lut of netlist.luts) cellMap.set(lut.out, lut);
+
+    // 頂層 Primary Inputs 初始為 0ns
+    for (const inp of netlist.inputs) arrivalTimes.set(inp, 0.0);
+
+    let maxDelay = 0.0;
+    let criticalRoot = null;
+
+    // 拓樸依賴前向計算 Arrival Time
+    const getArrival = (netName) => {
+      if (arrivalTimes.has(netName)) return arrivalTimes.get(netName);
+      const lut = cellMap.get(netName);
+      if (!lut) return 0.0; // DFF 輸出在時鐘週期起點視為 0ns
+
+      let maxIn = 0.0;
+      for (const i of lut.inputs) {
+        const arr = getArrival(i);
+        // 加入佈局線路曼哈頓延遲
+        const p1 = placement.padPos.get(i) || placement.pos.get(i);
+        const p2 = placement.pos.get(netName);
+        const dist = (p1 && p2) ? Math.abs(p1.x - p2.x) + Math.abs(p1.y - p2.y) : 1;
+        const t = arr + this.lutDelay + dist * this.wireDelay;
+        if (t > maxIn) maxIn = t;
+      }
+
+      arrivalTimes.set(netName, maxIn);
+      return maxIn;
+    };
+
+    // 評估所有輸出與 DFF 輸入端之到達時間
+    for (const out of netlist.outputs) {
+      const arr = getArrival(out);
+      if (arr > maxDelay) { maxDelay = arr; criticalRoot = out; }
+    }
+    for (const dff of netlist.dffs) {
+      const arr = getArrival(dff.in) + this.dffDelay;
+      if (arr > maxDelay) { maxDelay = arr; criticalRoot = dff.in; }
+    }
+
+    // 回溯尋找關鍵路徑節點
+    const criticalPath = [];
+    let curr = criticalRoot;
+    while (curr) {
+      criticalPath.unshift(curr);
+      const lut = cellMap.get(curr);
+      if (!lut || lut.inputs.length === 0) break;
+      let worstInput = lut.inputs[0];
+      let worstT = 0;
+      for (const inp of lut.inputs) {
+        const t = arrivalTimes.get(inp) || 0;
+        if (t >= worstT) { worstT = t; worstInput = inp; }
+      }
+      curr = worstInput;
+    }
+
+    const criticalPathNs = Math.max(maxDelay, 0.5);
+    const fmaxMHz = 1000.0 / criticalPathNs;
+
+    return { criticalPath, criticalPathNs, fmaxMHz };
+  }
+}
+
+function placeAndRoute(netlist, options) {
+  return new MicroPnR(options).run(netlist);
+}
+
 /***** lib/hdl/codegen.js *****/
 // HackHDL → JavaScript 程式碼產生器（對應 _eda/hdl2rs/src/gen.rs）
 //
@@ -5074,6 +5788,7 @@ return { assemble, disassemble, Emulator };
     parseHdl,
     loadLibrary, mergeLibs, mergeLibsList, elab, Builtin,
     HdlGraph,
+    MicroSyn, synthesize, MicroPnR, placeAndRoute,
     generateJs, topClassExpr, pinSan,
     parseScript, run,
     TopModel,

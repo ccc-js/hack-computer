@@ -553,10 +553,447 @@
   };
   } // initGraph
 
+  // ---- v5.0 合成＋FPGA 佈局／繞線／時序展示（synthesis → PnR → STA） ----
+  function initSyn() {
+    const sEl = {
+      btn: document.getElementById('syn'),
+      overlay: document.getElementById('synOverlay'),
+      stats: document.getElementById('synStats'),
+      canvas: document.getElementById('fpgaCanvas'),
+      wrap: document.getElementById('canvasWrap'),
+      side: document.getElementById('fpgaSide'),
+      selTitle: document.getElementById('synSelTitle'),
+      selBody: document.getElementById('synSelBody'),
+      luts: document.getElementById('synLuts'),
+      err: document.getElementById('fpgaErr'),
+      replay: document.getElementById('synReplay'),
+      finalBtn: document.getElementById('synFinal'),
+      close: document.getElementById('synClose'),
+    };
+    if (!sEl.btn) return;
+
+    let S = null; // { netlist, result, snapshots, cellById }
+    let mode = 'final';        // final | anim
+    let animTimer = null;
+    let animIdx = 0;
+    let selectedCell = null;
+    let cellPx = 24, padPx = 0; // 幾何參數（draw 前計算）
+
+    function currentLibAndTop() {
+      let lib = fullLib();
+      const parsed = H.parseHdl(el.hdl.value);
+      const chip = Object.assign({}, parsed, { source: el.hdl.value });
+      lib = mergeLibs(lib, { [chip.name]: chip });
+      // top 以編輯區晶片優先；找不到才退回 .tst load
+      let top = chip.name;
+      try {
+        const script = parseScript(el.mode.value === 'chapter'
+          ? window.HACKJS_CORPUS[el.case.value] ?? ''
+          : el.tst.value);
+        if (script.load && lib[script.load.replace(/\.hdl$/, '')]) top = script.load.replace(/\.hdl$/, '');
+        else if (script.load && Object.keys(lib).some((k) => k === chip.name)) top = chip.name;
+      } catch (_) { /* .tst 解析失敗就只用編輯區晶片 */ }
+      return { lib, top };
+    }
+
+    function runSyn() {
+      sEl.err.classList.add('hidden');
+      sEl.err.textContent = '';
+      try {
+        const { lib, top } = currentLibAndTop();
+        const exp = elab(lib, top);
+        const syn = new H.MicroSyn();
+        const netlist = syn.synthesize(exp, top);
+        const snapshots = [];
+        const pnr = new H.MicroPnR({ onSample: (rec) => snapshots.push(rec) });
+        const result = pnr.run(netlist);
+        const cellById = {};
+        for (const lut of netlist.luts) cellById[lut.id] = lut;
+        for (const dff of netlist.dffs) cellById[dff.id] = dff;
+        S = { netlist, result, snapshots, cellById, top, nets: collectNets(netlist) };
+        mode = 'final';
+        selectedCell = null;
+        stopAnim();
+        sEl.overlay.classList.remove('hidden');
+        updateStats();
+        fillLutList(null);
+        showCellInfo(null);
+        resize();
+        draw();
+      } catch (err) {
+        sEl.err.classList.remove('hidden');
+        sEl.err.textContent = `合成／佈局失敗：${err.message}`;
+        sEl.overlay.classList.remove('hidden');
+      }
+    }
+
+    function updateStats() {
+      const { netlist, result } = S;
+      const synthLine = `合成：<b>${netlist.luts.length}</b> 顆 LUT4 ＋ <b>${netlist.dffs.length}</b> 顆 DFF（原始 ${netlist.stats.rawGates} 閘）`;
+      const p = result.placement;
+      const pads = p.padPos.size;
+      const st = result.stats;
+      sEl.stats.innerHTML =
+        `${synthLine}｜晶片 <b>${escapeHtml(netlist.chipName)}</b>`
+        + `｜格子 <b>${result.grid.width}×${result.grid.height}</b>（利用 ${st.density}）`
+        + `｜I/O Pad <b>${pads}</b>`
+        + `｜總線長 <b>${st.totalWireLength}</b>`
+        + `｜<span class="cr">F<sub>max</sub> ≈ <b>${st.fmaxMHz}</b> MHz</span>`
+        + `｜<span class="cr">關鍵路徑 <b>${st.criticalPathNs}</b> ns</span>`;
+    }
+
+    // ---- 幾何 ----
+    function resize() {
+      const r = sEl.wrap.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      sEl.canvas.width = Math.max(64, Math.floor(r.width * dpr));
+      sEl.canvas.height = Math.max(64, Math.floor(r.height * dpr));
+      draw();
+    }
+
+    function geom() {
+      const { result } = S;
+      const gw = result.grid.width + 2; // 兩側留 Pad 廠
+      const gh = result.grid.height + 2;
+      const W = sEl.canvas.width, Hc = sEl.canvas.height;
+      const px = Math.min((W - 20) / gw, (Hc - 20) / gh);
+      cellPx = Math.max(12, Math.floor(px));
+      const ox = Math.floor((W - cellPx * gw) / 2);
+      const oy = Math.floor((Hc - cellPx * gh) / 2);
+      return { gw, gh, ox, oy, cellPx };
+    }
+
+    const xyOf = (g, x, y) => ({ sx: g.ox + (x + 1) * g.cellPx, sy: g.oy + (y + 1) * g.cellPx });
+
+    // net 資訊（動畫畫即時走線用）：driver → sinks 的 cell/pad 關聯
+    function collectNets(netlist) {
+      const outOf = new Map(); // driverNet -> cell id
+      for (const lut of netlist.luts) outOf.set(lut.out, lut.id);
+      for (const dff of netlist.dffs) outOf.set(dff.out, dff.id);
+      const padOf = new Set(netlist.inputs); // 輸入 pad 也是 driver
+      const inSinks = []; // { driverNet, sinks: [{cell}|{pad}] }
+      const ensure = (d) => {
+        let n = inSinks.find((x) => x.driver === d);
+        if (!n) { n = { driver: d, sinks: [] }; inSinks.push(n); }
+        return n;
+      };
+      for (const lut of netlist.luts) for (const i of lut.inputs) ensure(i).sinks.push({ cell: lut.id });
+      for (const dff of netlist.dffs) ensure(dff.in).sinks.push({ cell: dff.id });
+      for (const out of netlist.outputs) {
+        if (out !== '0' && out !== '1') ensure(out).sinks.push({ pad: out });
+      }
+      // 逐一標記 driver 型態
+      for (const n of inSinks) {
+        n.driverCell = outOf.get(n.driver) || null;
+        n.driverPad = !n.driverCell && padOf.has(n.driver) ? n.driver : null;
+      }
+      // 濾掉完全找不到 driver 的 net（常數）
+      return inSinks.filter((n) => n.driverCell || n.driverPad);
+    }
+
+    function hue(id) {
+      let h = 0;
+      for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0xffff;
+      return h % 360;
+    }
+    function padLabelOf(name) {
+      return name.replace(/^n_/, '').replace(/\[\d+\]/, '·') || name;
+    }
+
+    function draw() {
+      const ctx = sEl.canvas.getContext('2d');
+      ctx.clearRect(0, 0, sEl.canvas.width, sEl.canvas.height);
+      if (!S || mode === 'anim') return drawAnimFrame(ctx);
+      drawFinal(ctx);
+    }
+
+    function drawAnimFrame(ctx) {
+      const f = S.animFrame; // {cells, cost, temp}
+      if (!f) return;
+      const g = geom();
+      // 淡格線
+      ctx.strokeStyle = '#232b36';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= g.gw; i++) {
+        ctx.beginPath(); ctx.moveTo(g.ox + i * g.cellPx, g.oy); ctx.lineTo(g.ox + i * g.cellPx, g.oy + g.gh * g.cellPx); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(g.ox, g.oy + i * g.cellPx); ctx.lineTo(g.ox + g.gw * g.cellPx, g.oy + i * g.cellPx); ctx.stroke();
+      }
+      // I/O Pad（固定不動）
+      for (const [name, c] of S.result.placement.padPos) {
+        const p = xyOf(g, c.x, c.y);
+        ctx.fillStyle = '#3b3323';
+        ctx.fillRect(p.sx, p.sy, g.cellPx - 1, g.cellPx - 1);
+        ctx.strokeStyle = '#ffd479';
+        ctx.strokeRect(p.sx - .5, p.sy - .5, g.cellPx, g.cellPx);
+        if (g.cellPx >= 22) {
+          ctx.fillStyle = '#ffd479'; ctx.font = '10px monospace';
+          ctx.fillText(padLabelOf(name), p.sx + 1, p.sy + g.cellPx - 4);
+        }
+      }
+      // 細胞位置（禎間插值）
+      const posMap = f.posMap;
+      const center = (id) => {
+        const c = posMap.get(id);
+        if (!c) return null;
+        return { x: g.ox + (c.x + 1) * g.cellPx + g.cellPx / 2, y: g.oy + (c.y + 1) * g.cellPx + g.cellPx / 2 };
+      };
+      const padCenter = (name) => {
+        const c = S.result.placement.padPos.get(name);
+        return c ? { x: g.ox + (c.x + 1) * g.cellPx + g.cellPx / 2, y: g.oy + (c.y + 1) * g.cellPx + g.cellPx / 2 } : null;
+      };
+      // 即時走線：連線本來就很長、退火後越縮越短
+      if (cellPx >= 14) {
+        ctx.lineWidth = 1;
+        for (const n of S.nets) {
+          const d = n.driverCell ? center(n.driverCell) : padCenter(n.driverPad);
+          if (!d) continue;
+          ctx.strokeStyle = 'rgba(126,195,255,.20)';
+          for (const s of n.sinks) {
+            const p = s.cell ? center(s.cell) : padCenter(s.pad);
+            if (!p) continue;
+            const midX = p.x, midY = d.y;
+            ctx.beginPath();
+            ctx.moveTo(d.x, d.y); ctx.lineTo(midX, midY); ctx.lineTo(p.x, p.y);
+            ctx.stroke();
+          }
+        }
+      }
+      // CLB
+      for (const c of f.cells) {
+        const cell = S.cellById[c.id];
+        if (!cell) continue;
+        const p = xyOf(g, c.x, c.y);
+        ctx.fillStyle = `hsl(${hue(cell.id)},50%,38%)`;
+        ctx.fillRect(p.sx, p.sy, g.cellPx - 2, g.cellPx - 2);
+        ctx.strokeStyle = `hsl(${hue(cell.id)},60%,70%)`;
+        ctx.strokeRect(p.sx + .5, p.sy + .5, g.cellPx - 3, g.cellPx - 3);
+      }
+      ctx.fillStyle = '#9fb2c8';
+      ctx.font = '12px monospace';
+      ctx.fillText(`T=${f.temp.toFixed(2)}  HPWL=${f.cost}（初值 ${S.snapshots[0].cost}）  步 #${S.animStep + 1}/${S.snapshots.length}`, 10, 16);
+      // HPWL 收斂曲線（左下 sparkline）
+      const costs = S.snapshots.map((s) => s.cost);
+      const cw = Math.min(260, g.cellPx * 6), ch = 40;
+      const cx0 = 10, cy0 = sEl.canvas.height - ch - 10;
+      ctx.strokeStyle = '#2a3441';
+      ctx.strokeRect(cx0, cy0, cw, ch);
+      const cmin = Math.min(...costs), cmax = Math.max(...costs);
+      const cy = (v) => cy0 + ch - 4 - ((v - cmin) / Math.max(1, cmax - cmin)) * (ch - 8);
+      ctx.beginPath();
+      costs.forEach((v, i) => {
+        const px = cx0 + 4 + (i / costs.length) * (cw - 8);
+        if (i === 0) ctx.moveTo(px, cy(v));
+        else ctx.lineTo(px, cy(v));
+      });
+      ctx.strokeStyle = '#ffd479';
+      ctx.stroke();
+      ctx.fillStyle = '#9fb2c8'; ctx.font = '10px monospace';
+      ctx.fillText(`HPWL 收斂 ${cmin}..${cmax}`, cx0 + 4, cy0 - 3);
+    }
+
+    function drawFinal(ctx) {
+      const { result, netlist, selectedCell } = S;
+      const g = geom();
+      const critSet = new Set(result.timing.criticalPath);
+      // 中央格線
+      ctx.strokeStyle = '#2a3441';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= g.gw; i++) {
+        ctx.beginPath(); ctx.moveTo(g.ox + i * g.cellPx, g.oy); ctx.lineTo(g.ox + i * g.cellPx, g.oy + g.gh * g.cellPx); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(g.ox, g.oy + i * g.cellPx); ctx.lineTo(g.ox + g.gw * g.cellPx, g.oy + i * g.cellPx); ctx.stroke();
+      }
+      // 周邊 I/O Pad
+      for (const [name, c] of result.placement.padPos) {
+        const p = xyOf(g, c.x, c.y);
+        ctx.fillStyle = '#3b3323';
+        ctx.fillRect(p.sx, p.sy, g.cellPx - 1, g.cellPx - 1);
+        ctx.strokeStyle = '#ffd479';
+        ctx.strokeRect(p.sx - .5, p.sy - .5, g.cellPx, g.cellPx);
+        if (g.cellPx >= 22) {
+          ctx.fillStyle = '#ffd479'; ctx.font = '10px monospace';
+          ctx.fillText(padLabelOf(name), p.sx + 1, p.sy + g.cellPx - 4);
+        }
+      }
+      // 繞線：一般線（含到 pad 的 sink）
+      const isCrit = (k) => critSet.has(k);
+      const drawSeg = (seg, color, width, dash) => {
+        const p1 = xyOf(g, seg.x1, seg.y1), p2 = xyOf(g, seg.x2, seg.y2);
+        const cx1 = p1.sx + g.cellPx / 2, cy1 = p1.sy + g.cellPx / 2;
+        const cx2 = p2.sx + g.cellPx / 2, cy2 = p2.sy + g.cellPx / 2;
+        const midX = cx2, midY = cy1;
+        ctx.beginPath();
+        ctx.moveTo(cx1, cy1); ctx.lineTo(midX, midY); ctx.lineTo(cx2, cy2);
+        ctx.strokeStyle = color; ctx.lineWidth = width;
+        if (dash) ctx.setLineDash(dash);
+        ctx.stroke(); ctx.setLineDash([]);
+      };
+      for (const rn of result.routing.routedNets) {
+        if (isCrit(rn.driver)) continue;
+        for (const seg of rn.segments) drawSeg(seg, 'rgba(126,195,255,.22)', 1);
+      }
+      // Critical Path 紅色走線
+      for (const rn of result.routing.routedNets) {
+        if (!isCrit(rn.driver)) continue;
+        for (const seg of rn.segments) drawSeg(seg, '#ff9b8a', 2.2);
+      }
+      // CLB
+      for (const [id, c] of result.placement.pos) {
+        const cell = S.cellById[id];
+        const p = xyOf(g, c.x, c.y);
+        const isCritCell = id && (isCrit(id) || (cell && (isCrit(cell.out))));
+        ctx.fillStyle = `hsl(${hue(id)},45%,32%)`;
+        if (cell && !cell.inputs) ctx.fillStyle = '#1d4a63'; // DFF 青藍
+        ctx.fillRect(p.sx, p.sy, g.cellPx - 2, g.cellPx - 2);
+        ctx.strokeStyle = isCritCell ? '#ff5d47' : (cell && !cell.inputs ? '#7ec3ff' : `hsl(${hue(id)},55%,60%)`);
+        ctx.lineWidth = isCritCell ? 2 : 1;
+        ctx.strokeRect(p.sx - .5, p.sy - .5, g.cellPx - 1, g.cellPx - 1);
+        ctx.lineWidth = 1;
+        if (id === selectedCell) {
+          ctx.strokeStyle = '#ffd479'; ctx.lineWidth = 2.5;
+          ctx.strokeRect(p.sx - 2, p.sy - 2, g.cellPx + 1, g.cellPx + 1);
+          ctx.lineWidth = 1;
+        }
+        if (g.cellPx >= 24) {
+          ctx.fillStyle = '#dce1e8'; ctx.font = '10px monospace';
+          if (cell && !cell.inputs) ctx.fillText('DFF', p.sx + 3, p.sy + 12);
+          else ctx.fillText('L' + id.replace(/\D/g, ''), p.sx + 3, p.sy + 12);
+        }
+      }
+    }
+
+    // ---- 側欄 ----
+    function fillLutList(sel) {
+      const { netlist } = S;
+      const rows = [];
+      for (const lut of netlist.luts) {
+        rows.push(`<tr${sel === lut.id ? ' class="sel"' : ''} data-cell="${lut.id}"><td class="c1">${lut.id}</td><td>${lut.inputs.length}輸入</td><td>${lut.hex}</td><td>${lut.out.length > 14 ? lut.out.slice(0, 14) + '…' : lut.out}</td></tr>`);
+      }
+      for (const dff of netlist.dffs) {
+        rows.push(`<tr${sel === dff.id ? ' class="sel"' : ''} data-cell="${dff.id}"><td class="c1">${dff.id}</td><td>DFF</td><td>q=d</td><td>${dff.out.slice(0, 14)}…</td></tr>`);
+      }
+      sEl.luts.innerHTML = rows.join('');
+      for (const tr of sEl.luts.querySelectorAll('tr')) {
+        tr.onclick = () => showCellInfo(tr.dataset.cell);
+      }
+    }
+
+    function truthTableHtml(inputs, init) {
+      const k = inputs.length;
+      const short = (n) => n.replace(/^n_/, '').replace(/\[\d+\]$/, '·');
+      let html = `<table border="1" id="fpgaTruth"><tr><th>m</th>${inputs.map((i, x) => `<th>${escapeHtml(short(i))}</th>`).join('')}<th>out</th></tr>`;
+      for (let m = 0; m < (1 << k); m++) {
+        let idx = 0;
+        for (let i = 0; i < k; i++) idx |= ((m >> i) & 1) << i;
+        const bit = (init >> idx) & 1;
+        html += `<tr><td>${m}</td>${Array.from({ length: k }, (_, i) => `<td>${(m >> i) & 1}</td>`).join('')}<td style="color:${bit ? '#6fe39a' : '#9fb2c8'}">${bit}</td></tr>`;
+      }
+      return html + '</table>';
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function showCellInfo(cellId) {
+      selectedCell = cellId;
+      if (!S) return;
+      const cell = cellId ? S.cellById[cellId] : null;
+      if (!cell) {
+        sEl.selTitle.textContent = 'LUT / DFF';
+        sEl.selBody.innerHTML = `<div style="color:#9fb2c8">點左側格子（或清單）可檢視此 CLB 內的 LUT 真值表／DFF。</div>`;
+        fillLutList(null);
+        draw();
+        return;
+      }
+      fillLutList(cellId);
+      if (!cell.inputs) { // DFF
+        sEl.selTitle.textContent = `${cell.id}（DFF）`;
+        sEl.selBody.innerHTML = `<div>in = ${escapeHtml(cell.in)}<br>out = ${escapeHtml(cell.out)}</div>`;
+      } else {
+        sEl.selTitle.textContent = `${cell.id}（${cell.inputs.length} 輸入 LUT4）`;
+        sEl.selBody.innerHTML =
+          `<div>out = ${escapeHtml(cell.out)}　init = ${cell.hex}</div>`
+          + truthTableHtml(cell.inputs, cell.init)
+          + `<div style="color:#9fb2c8;margin-top:6px">真值表列＝輸入組合，位元 i ↔ 輸入表第 i 欄。</div>`;
+      }
+      draw();
+    }
+
+    // ---- 退火動畫 ----
+    function stopAnim() {
+      if (animTimer) { clearInterval(animTimer); animTimer = null; }
+      sEl.replay.textContent = '▶ 退火動畫';
+    }
+
+    function startAnim() {
+      if (!S || S.snapshots.length === 0) return;
+      stopAnim();
+      mode = 'anim';
+      sEl.replay.textContent = '⏸ 動畫中';
+      // 禎間插值：每個取樣點之間滑動 SUB 禎（元件平滑移動，非跳格）
+      const SUB = 2;
+      let k = 0; // 全域禎序（含插值）
+      const total = (S.snapshots.length - 1) * SUB;
+      S.animStep = 0;
+      const showFrame = (t) => {
+        const i = Math.min(S.snapshots.length - 2, Math.floor(t / SUB));
+        const r = (t - i * SUB) / SUB;
+        const a = S.snapshots[i].cells, b = S.snapshots[i + 1].cells || a;
+        const pa = new Map(a.map((c) => [c.id, c]));
+        const pb = new Map(b.map((c) => [c.id, c]));
+        const cells = [];
+        for (const [id, ca] of pa) {
+          const cb = pb.get(id) || ca;
+          cells.push({ id, x: ca.x + (cb.x - ca.x) * r, y: ca.y + (cb.y - ca.y) * r });
+        }
+        const cost = S.snapshots[i].cost + (S.snapshots[i + 1].cost - S.snapshots[i].cost) * r;
+        const temp = S.snapshots[i].temp + (S.snapshots[i + 1].temp - S.snapshots[i].temp) * r;
+        S.animFrame = { cells, posMap: new Map(cells.map((c) => [c.id, c])), cost, temp };
+        S.animStep = i;
+        draw();
+      };
+      showFrame(0);
+      animTimer = setInterval(() => {
+        k++;
+        if (k > total) {
+          clearInterval(animTimer);
+          animTimer = null;
+          mode = 'final';
+          sEl.replay.textContent = '▶ 退火動畫';
+          draw();
+          return;
+        }
+        showFrame(k);
+      }, 45);
+    }
+
+    sEl.btn.onclick = runSyn;
+    sEl.close.onclick = () => { stopAnim(); sEl.overlay.classList.add('hidden'); };
+    sEl.replay.onclick = startAnim;
+    sEl.finalBtn.onclick = () => { stopAnim(); mode = 'final'; sEl.replay.textContent = '▶ 退火動畫'; draw(); };
+    sEl.canvas.onclick = (ev) => {
+      if (!S) return;
+      const r = sEl.canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const cx = (ev.clientX - r.left) * dpr;
+      const cy = (ev.clientY - r.top) * dpr;
+      const g = geom();
+      const gx = Math.floor((cx - g.ox) / g.cellPx) - 1;
+      const gy = Math.floor((cy - g.oy) / g.cellPx) - 1;
+      let hit = null;
+      for (const [id, c] of S.result.placement.pos) {
+        if (c.x === gx && c.y === gy) { hit = id; break; }
+      }
+      showCellInfo(hit);
+    };
+    window.addEventListener('resize', resize);
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initGraph);
+    document.addEventListener('DOMContentLoaded', () => { initGraph(); initSyn(); });
   } else {
     initGraph();
+    initSyn();
   }
   fillChapter();
   fillCase();
