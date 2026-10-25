@@ -852,11 +852,15 @@
     function drawAsicStage(ctx) {
       const idx = stageIdx();
       if (idx <= 2) {
-        const gates = (idx === 2 ? S.stages?.opt : S.stages?.flat)?.gates || [];
+        const flat = S.stages?.flat, opt = S.stages?.opt;
+        const gates = (idx === 2 ? opt : flat)?.gates || [];
+        const same = (a, b) => a && b && JSON.stringify(a.gates) === JSON.stringify(b.gates)
+          && JSON.stringify(a.primaryOutputs) === JSON.stringify(b.primaryOutputs);
+        const note = idx === 2 && same(flat, opt) ? '　＝②（本電路無可化簡項）' : '';
         const cap = idx === 0
           ? '① RTL→Logic：Elab 階層展開完成 → 位元級 NAND/DFF 網表'
           : idx === 1 ? '② Logic Netlist：展平後位元級 NAND/DFF'
-            : '③ Tech-indep Opt：化簡後網表（與 FPGA 共用，再進 Cell Map）';
+            : '③ Tech-indep Opt：化簡後網表（與 FPGA 共用，再進 Cell Map）' + note;
         drawAbstract(ctx, gates, cap);
         return;
       }
@@ -872,6 +876,8 @@
 
     // 抽象網表圖：level 分欄的小方塊（門／cell 通用）
     function drawAbstract(ctx, items, caption, colorOf) {
+      // 點擊用 hit rects（每次重畫重建；canvas.onclick 在抽象階段以此比對）
+      S.absRects = [];
       const cols = new Map(); // level -> items 順序
       const levelOf = new Map();
       const drv = new Map();
@@ -899,7 +905,30 @@
       const box = Math.max(4, Math.min(14, colW - 4));
       const maxCnt = Math.max(1, ...cols.values().map((a) => a.length));
       const rowH = Math.min(box + 2, (Hc - 90) / maxCnt);
-
+      // 先決定每個 gate 的座標（畫線要用）
+      const gPos = new Map();
+      for (const [lv, slots] of cols) {
+        slots.forEach((g, i) => {
+          gPos.set(g, { x: 64 + lv * colW + (colW - box) / 2, y: 54 + i * rowH, lv });
+        });
+      }
+      // 連線：driver 右緣 → consumer 左緣（單元數多時略去避免毛球）
+      if (items.length <= 160) {
+        ctx.strokeStyle = '#3d4a5c'; ctx.lineWidth = 1;
+        for (const g of items) {
+          const p = gPos.get(g);
+          if (!p) continue;
+          for (const net of g.in) {
+            const dg = drv.get(net);
+            const dp = dg && gPos.get(dg);
+            if (!dp || dp === p) continue;
+            ctx.beginPath();
+            ctx.moveTo(dp.x + box, dp.y + box * .4);
+            ctx.lineTo(p.x, p.y + box * .4);
+            ctx.stroke();
+          }
+        }
+      }
       ctx.strokeStyle = '#232b36';
       for (let l = 0; l <= nCol; l++) {
         ctx.beginPath();
@@ -912,6 +941,12 @@
           const color = colorOf ? (ASIC_COL[g.type] || '#888') : (g.type === 'DFF' ? '#1d4a63' : `hsl(${hue(g.out)},45%,42%)`);
           ctx.fillStyle = color;
           ctx.fillRect(x, y, box, box * .8);
+          S.absRects.push({ x, y, w: box, h: box * .8, item: g });
+          if (String(selectedCell) === String(g.out) || String(selectedCell) === String(g.id)) {
+            ctx.strokeStyle = '#ffd479'; ctx.lineWidth = 2;
+            ctx.strokeRect(x - 1, y - 1, box + 2, box * .8 + 2);
+            ctx.lineWidth = 1;
+          }
           if (colW >= 34 && maxCnt <= 42 && box >= 7) {
             // 圖上文字：type ＋ 輸出 net 名（數量多時略去以免糊成一團）
             ctx.fillStyle = '#8fa3bb'; ctx.font = '8px monospace';
@@ -1046,10 +1081,16 @@
     function drawFpgaStage(ctx) {
       const idx = stageIdx();
       if (idx <= 2) {
-        const gates = (idx === 2 ? S.stages?.opt : S.stages?.flat)?.gates || [];
+        const flat = S.stages?.flat, opt = S.stages?.opt;
+        const gates = (idx === 2 ? opt : flat)?.gates || [];
+        // 內容與上一階段完全一致時在標題標示，避免「三張圖都一樣是不是有 bug」的疑慮
+        const same = (a, b) => a && b && JSON.stringify(a.gates) === JSON.stringify(b.gates)
+          && JSON.stringify(a.primaryOutputs) === JSON.stringify(b.primaryOutputs);
+        let note = '';
+        if (idx === 2 && same(flat, opt)) note = '　＝②（本電路無可化簡項）';
         const cap = idx === 0
           ? '① RTL→Logic：Elab 階層展開完成 → 位元級 NAND/DFF 網表'
-          : idx === 1 ? '② Logic Netlist：展平後位元級 NAND/DFF' : '③ Tech-indep Opt：化簡後網表（FPGA／ASIC 由此分流）';
+          : idx === 1 ? '② Logic Netlist：展平後位元級 NAND/DFF' : '③ Tech-indep Opt：化簡後網表（FPGA／ASIC 由此分流）' + note;
         drawAbstract(ctx, gates, cap);
         return;
       }
@@ -1262,6 +1303,29 @@
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
+    // ---- 抽象階段（①②③／ASIC ④）點方塊：顯示該閘／cell 的邏輯細節 ----
+    function showGateInfo(hit) {
+      selectedCell = hit ? String(hit.out ?? hit.id ?? '') : null;
+      if (!S) return;
+      if (!hit) {
+        sEl.selTitle.textContent = asicMode && S.asic ? 'ASIC cell' : 'LUT / DFF';
+        sEl.selBody.innerHTML = `<div style="color:#9fb2c8">${asicMode && S.asic ? '點 cell 方塊可看標準單元細節。' : '點方塊可看此閘的接線；④ 起才有實體佈局可點。'}</div>`;
+        fillLutList(null);
+        fillCellListAsic(null);
+        draw();
+        return;
+      }
+      if (S.asic && hit.id && S.asic.cellById[hit.id]) return showCellInfoAsic(hit.id);
+      const sym = hit.type === 'INV' ? 'INV' : hit.type === 'DFF' ? 'DFF' : hit.type === 'NAND' ? 'NAND' : hit.type;
+      sEl.selTitle.textContent = `${hit.out || hit.id}（${sym}）`;
+      sEl.selBody.innerHTML =
+        `<div>${hit.in ? 'in = ' + hit.in.map(escapeHtml).join(', ') + '<br>' : ''}out = ${escapeHtml(hit.out || '')}</div>`
+        + `<div style="color:#9fb2c8;margin-top:6px">抽象階段僅顯示邏輯接線；進到 ④ 之後才會有成為 LUT／cell 的實體資訊。</div>`;
+      fillLutList(null);
+      fillCellListAsic(null);
+      draw();
+    }
+
     function showCellInfo(cellId) {
       selectedCell = cellId;
       if (!S) return;
@@ -1467,11 +1531,22 @@
     sEl.viewSeg.onchange = () => setView(sEl.viewSeg.value === 'asic');
     sEl.canvas.onclick = (ev) => {
       if (!S) return;
+      // 座標：CSS px → backing px（resize() 以 rect×dpr 設定 canvas.width，比例正好是 dpr）
       const r = sEl.canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = (sEl.canvas.width || 1) / Math.max(1, r.width);
       const cx = (ev.clientX - r.left) * dpr;
       const cy = (ev.clientY - r.top) * dpr;
+      // 抽象網表階段（①②③／ASIC ④ cell map）畫的是邏輯層次視圖，沒有可點選的
+      // 實體位置——此時不做 hit test 直接清選取，避免拿「最終佈局」的座標對到錯的元件。
+      const idx = stageIdx();
       if (asicMode && S.asic) {
+        if (idx <= 3) {
+          // 抽象階段：以最近一次 drawAbstract 記下的 hit rects 比對（由上而下）
+          const rects = (S.absRects || []).slice().reverse();
+          const hit = rects.find((rc) => cx >= rc.x && cx <= rc.x + rc.w + (rc.lw || 0) && cy >= rc.y && cy <= rc.y + rc.h) || null;
+          showGateInfo(hit && hit.item);
+          return;
+        }
         const { rowH, pxUm, xOff, yOff, rows } = asicGeom();
         let hit = null;
         for (const Ai of rows) {
@@ -1484,6 +1559,12 @@
           if (hit) break;
         }
         showCellInfo(hit);
+        return;
+      }
+      if (idx <= 2) {
+        const rects = (S.absRects || []).slice().reverse();
+        const hit = rects.find((rc) => cx >= rc.x && cx <= rc.x + rc.w && cy >= rc.y && cy <= rc.y + rc.h) || null;
+        showGateInfo(hit && hit.item);
         return;
       }
       const g = geom();
