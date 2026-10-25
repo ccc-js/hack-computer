@@ -1,5 +1,7 @@
 # hack-computer：JavaScript 版 Nand2Tetris 全工具鏈＋RISC-V 後端
 
+* 線上網頁版 -- https://ccc-js.github.io/hack-computer/dist/hdl.html
+
 零依賴 ESM，Node ≥ 20。同一套 `lib/` 跑在 Node（CLI／測試）與瀏覽器
 （`dist/*.html`，`file://` 雙擊即開，免 server）。
 
