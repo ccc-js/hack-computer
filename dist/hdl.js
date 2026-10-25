@@ -569,6 +569,9 @@
       replay: document.getElementById('synReplay'),
       finalBtn: document.getElementById('synFinal'),
       reportBtn: document.getElementById('synReport'),
+      synTitle: document.getElementById('synTitle'),
+      synListTitle: document.getElementById('synListTitle'),
+      hint: document.getElementById('canvasHint'),
       viewFpga: document.getElementById('viewFpga'),
       viewAsic: document.getElementById('viewAsic'),
       lutArea: document.getElementById('fpgaLutArea'),
@@ -662,13 +665,31 @@
         + `｜<span class="cr">關鍵路徑 <b>${st.criticalPathNs}</b> ns</span>`;
     }
 
-    // ---- ASIC 標準單元視圖 ----
+    // ---- 依視圖（FPGA / ASIC）更新整個介面：標題、stats、側欄、報告 ----
     function updateViewButtons() {
       const ok = !!(S && S.asic);
       sEl.viewAsic.disabled = !ok;
       sEl.viewAsic.title = ok ? 'ASIC 視圖：NAND2/INV/MUX2/AOI21/DFF 標準單元、row-based 佈局' : '（此晶片 ASIC 流程失敗，不可用）';
       sEl.viewFpga.classList.toggle('cur', !asicMode);
       sEl.viewAsic.classList.toggle('cur', asicMode);
+      sEl.synTitle.textContent = asicMode
+        ? '合成 → ASIC 標準單元 row 佈局 / STA'
+        : '合成 → FPGA LUT4 佈局 / 繞線 / 時序';
+      sEl.synListTitle.textContent = asicMode ? 'Standard Cell 清單（點選）' : 'LUT 清單（點選）';
+      sEl.selTitle.textContent = asicMode ? 'ASIC cell' : 'LUT / DFF';
+      // 退火動畫（模擬退火佈局）與繞線/時序按鈕是 FPGA 專屬：ASIC 用 row-based 佈局、
+      // 無繞線引擎；ASIC 的 critical path 直接以紅框畫在 row 圖上，不需要切換按鈕。
+      sEl.replay.disabled = asicMode;
+      sEl.replay.title = asicMode
+        ? '（FPGA 專屬：模擬退火只針對 CLB 格子佈局）'
+        : '重播模擬退火佈局動畫（連線越來越短）';
+      sEl.finalBtn.disabled = asicMode;
+      sEl.finalBtn.title = asicMode
+        ? '（FPGA 專屬：ASIC 佈局本身就把 critical path 用紅框標出）'
+        : '顯示最終繞線＋紅色 Critical Path＋Fmax';
+      sEl.hint.textContent = asicMode
+        ? '點 cell 看標準單元細節（延遲／面積／row）；紅框＝Critical Path（含 clk-q＋setup）；寬度 ∝ 面積；右上 FPGA／ASIC 可切回'
+        : '點格子看 LUT／DFF 真值表；紅色為 Critical Path；金框為 I/O Pad；右上 FPGA／ASIC 可切換';
     }
 
     function asicGeom() {
@@ -1120,8 +1141,28 @@
             return;
           }
         }
-        const lines = [
-          `// 合成報告：${netlist.chipName}（micro-yosys）`,
+        let lines;
+        if (asicMode && S.asic) {
+          // ASIC 模式：報告聚焦在標準單元綜合（前端 Flatten/Optimize 共用，映射與佈局不同）
+          const an = S.asic.netlist, art = S.asic.result;
+          const byType = an.stats.cellTypeCounts;
+          lines = [
+            `// 合成報告（ASIC）：${an.chipName}（micro-yosys-asic）`,
+            `// [1] Flatten   位元級 NAND/DFF：${flat.gates.length} 閘（與 FPGA 共用前端）`,
+            `// [2] Optimize  常數傳遞／雙重否定／清理後：${opt.gates.length} 閘`,
+            `// [3] Cell map  NAND 基底＋MUX2/AOI21 圖樣重寫 → ${an.stats.cellCount} standard cells（面積 ${an.stats.areaUm2} µm²）`,
+            `// 各類 cell：${Object.entries(byType).map(([k, v]) => `${k}×${v}`).join('  ')}`,
+            '',
+            'CELLS:',
+            ...an.cells.map((c) => `${c.id}  ${c.type.padEnd(6)}  w=${String(c.w).padEnd(5)}  row${String(c.row).padEnd(4)}  in=(${c.in.join(',')})  out=${c.out}`),
+            '',
+            `// 佈局：${art.stats.rowCount} 列（列高 2.2 µm）、最寬列 ${art.stats.maxRowWidthUm} µm、線長 ~${art.stats.totalWireUm} µm`,
+            `// STA：critical path ${art.timing.criticalPathNs} ns（Fmax ≈ ${art.timing.fmaxMHz} MHz）、hold slack ${art.timing.holdSlackNs ?? '—'} ns`,
+            `// 關鍵路徑：${art.timing.criticalPath.map((c) => `${c.cell}(${c.type})`).join(' → ')}`,
+          ];
+        } else {
+          lines = [
+          `// 合成報告（FPGA）：${netlist.chipName}（micro-yosys）`,
           `// [1] Flatten   位元級 NAND/DFF：${flat.gates.length} 閘、${flat.primaryInputs.length} PI、${flat.primaryOutputs.length} PO`,
           `// [2] Optimize  常數傳遞／雙重否定／清理後：${opt.gates.length} 閘（省 ${flat.gates.length - opt.gates.length}）`,
           `// [3] Techmap   ${netlist.luts.length} 顆 LUT4 ＋ ${netlist.dffs.length} 顆 DFF`,
@@ -1136,9 +1177,9 @@
           ...netlist.dffs.map((d) => `${d.id}  in=${d.in.padEnd(22).slice(0, 22)}  out=${d.out}`),
           '',
           `// 統計：raw ${netlist.stats.rawGates} 閘 → LUT ${netlist.stats.lutCount}＋DFF ${netlist.stats.dffCount}`,
-        ];
-        // ASIC 標準單元段落
-        if (S.asic) {
+          ];
+        }
+        if (!asicMode && S.asic) {
           const an = S.asic.netlist, art = S.asic.result;
           const byType = an.stats.cellTypeCounts;
           lines.push(

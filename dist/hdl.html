@@ -150,7 +150,7 @@
 <script src="corpus.js?v=14"></script>
 <script src="hdl-rt.js?v=10"></script>
 <script src="embed.js?v=20"></script>
-<script src="hdl.js?v=24"></script>
+<script src="hdl.js?v=26"></script>
 <div id="graphOverlay" class="hidden">
   <div id="graphBar">
     <h1>電路圖</h1>
@@ -174,7 +174,7 @@
 </div>
 <div id="synOverlay" class="hidden">
   <div id="synBar">
-    <h1>合成 → FPGA 佈局 / 繞線 / 時序</h1>
+    <h1 id="synTitle">合成 → FPGA 佈局 / 繞線 / 時序</h1>
     <div id="synStats"></div>
     <span class="spacer"></span>
     <button id="synClose">關閉 ✕</button>
@@ -197,7 +197,7 @@
       <div id="fpgaLutArea">
         <h3 id="synSelTitle">LUT / DFF</h3>
         <div id="synSelBody"></div>
-        <h3>LUT 清單（點選）</h3>
+        <h3 id="synListTitle">LUT 清單（點選）</h3>
         <table id="synLuts"></table>
       </div>
       <div id="fpgaReportArea" class="hidden">
