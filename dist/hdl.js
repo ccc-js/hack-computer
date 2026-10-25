@@ -569,6 +569,7 @@
       replay: document.getElementById('synReplay'),
       finalBtn: document.getElementById('synFinal'),
       reportBtn: document.getElementById('synReport'),
+      wiresBtn: document.getElementById('synWires'),
       synTitle: document.getElementById('synTitle'),
       synListTitle: document.getElementById('synListTitle'),
       hint: document.getElementById('canvasHint'),
@@ -648,7 +649,8 @@
         draw();
       } catch (err) {
         sEl.err.classList.remove('hidden');
-        sEl.err.textContent = `合成／佈局失敗：${err.message}`;
+        const st = (err.stack || '').split('\n').slice(1).filter((l) => l.includes('hdl.js') || l.includes('embed.js')).slice(0, 2).join('\n');
+        sEl.err.textContent = `合成／佈局失敗：${err.message}${st ? '\n' + st : ''}`;
         sEl.overlay.classList.remove('hidden');
       }
     }
@@ -703,7 +705,7 @@
     function buildPipe() {
       const flat = S.stages?.flat, opt = S.stages?.opt;
       if (!S.pipeViews) S.pipeViews = { fpga: { idx: 0 }, asic: { idx: 0 } };
-      const short = (n) => (n.length > 18 ? n.slice(0, 18) + '…' : n);
+      const short = (n) => (!n ? '（未命名）' : (n.length > 18 ? n.slice(0, 18) + '…' : n));
       const typeCnt = (gates) => {
         const m = { NAND: 0, DFF: 0 };
         for (const g of gates) m[g.type] = (m[g.type] || 0) + 1;
@@ -725,7 +727,7 @@
             '多重輸出連線（out=t, out=out）與 slice 綁定（out[0..7]=outLow）會統一為 per-bit 別名，避免孤兒 net。',
             '',
             '前 6 個 gate：',
-            ...flat.gates.slice(0, 6).map((g, i) => `  ${i}: ${g.type}(${g.in.join(', ')}) → ${short(g.out)}`),
+            ...flat.gates.filter((g) => g.out).slice(0, 6).map((g, i) => `  ${i}: ${g.type}(${g.in.join(', ')}) → ${short(g.out)}`),
             '',
             `主要輸出：${flat.primaryOutputs.slice(0, 8).map(short).join(', ')}${flat.primaryOutputs.length > 8 ? ' …' : ''}`].join('\n') },
         { k: 'opt', l: '③ Tech-indep Syn',
@@ -912,9 +914,9 @@
           gPos.set(g, { x: 64 + lv * colW + (colW - box) / 2, y: 54 + i * rowH, lv });
         });
       }
-      // 連線：driver 右緣 → consumer 左緣（單元數多時略去避免毛球）
-      if (items.length <= 160) {
-        ctx.strokeStyle = '#3d4a5c'; ctx.lineWidth = 1;
+      // 連線：driver 右緣 → consumer 左緣（預設開；單元數多時略去避免毛球）
+      if (absWires && items.length <= 160) {
+        ctx.strokeStyle = '#5a6d85'; ctx.lineWidth = 1;
         for (const g of items) {
           const p = gPos.get(g);
           if (!p) continue;
@@ -1422,6 +1424,13 @@
     sEl.btn.onclick = runSyn;
     sEl.close.onclick = () => { stopAnim(); sEl.overlay.classList.add('hidden'); };
     let reportMode = false;
+    // 抽象階段連線顯示開關（預設開；大圖自動省略以避免毛球）
+    let absWires = true;
+    sEl.wiresBtn.onclick = () => {
+      absWires = !absWires;
+      sEl.wiresBtn.textContent = absWires ? '⌁ 連線：開' : '⌁ 連線：關';
+      if (S) draw();
+    };
     sEl.reportBtn.onclick = () => {
       reportMode = !reportMode;
       sEl.reportBtn.textContent = reportMode ? '⌨ 報告開啟中 ✓' : '⌨ 合成報告';

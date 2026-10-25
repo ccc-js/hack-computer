@@ -154,8 +154,8 @@
 </main>
 <script src="corpus.js?v=14"></script>
 <script src="hdl-rt.js?v=10"></script>
-<script src="embed.js?v=20"></script>
-<script src="hdl.js?v=36"></script>
+<script src="embed.js?v=22"></script>
+<script src="hdl.js?v=39"></script>
 <div id="graphOverlay" class="hidden">
   <div id="graphBar">
     <h1>電路圖</h1>
@@ -184,7 +184,7 @@
     <span class="spacer"></span>
     <button id="synClose">關閉 ✕</button>
   </div>
-  <div id="synPipe"><select id="synViewSeg" title="切換 FPGA／ASIC 後端視圖"><option value="fpga">FPGA</option><option value="asic">ASIC</option></select><div id="synPipeChips"></div><span class="gap"></span><button id="synReplay" title="重播模擬退火佈局動畫（連線越來越短）">▶ 退火動畫</button><button id="synFinal" title="顯示最終繞線＋紅色 Critical Path＋Fmax">⏭ 繞線/時序</button><button id="synReport" title="右側切換合成過程文字報告（展平→化簡→LUT 清單）">⌨ 合成報告</button></div>
+  <div id="synPipe"><select id="synViewSeg" title="切換 FPGA／ASIC 後端視圖"><option value="fpga">FPGA</option><option value="asic">ASIC</option></select><div id="synPipeChips"></div><span class="gap"></span><button id="synReplay" title="重播模擬退火佈局動畫（連線越來越短）">▶ 退火動畫</button><button id="synFinal" title="顯示最終繞線＋紅色 Critical Path＋Fmax">⏭ 繞線/時序</button><button id="synReport" title="右側切換合成過程文字報告（展平→化簡→LUT 清單）">⌨ 合成報告</button><button id="synWires" title="抽象階段（①②③／ASIC ④）圖上要不要畫 driver→consumer 連線">⌁ 連線：開</button></div>
   <div id="synPipeInfo"></div>
   <div id="synBody">
     <div id="canvasWrap">
