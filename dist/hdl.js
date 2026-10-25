@@ -572,8 +572,10 @@
       synTitle: document.getElementById('synTitle'),
       synListTitle: document.getElementById('synListTitle'),
       hint: document.getElementById('canvasHint'),
-      viewFpga: document.getElementById('viewFpga'),
-      viewAsic: document.getElementById('viewAsic'),
+      pipe: document.getElementById('synPipe'),
+      pipeChips: document.getElementById('synPipeChips'),
+      pipeInfo: document.getElementById('synPipeInfo'),
+      viewSeg: document.getElementById('synViewSeg'),
       lutArea: document.getElementById('fpgaLutArea'),
       reportArea: document.getElementById('fpgaReportArea'),
       reportText: document.getElementById('synReportText'),
@@ -632,12 +634,14 @@
         for (const lut of netlist.luts) cellById[lut.id] = lut;
         for (const dff of netlist.dffs) cellById[dff.id] = dff;
         S = { netlist, result, snapshots, cellById, top, nets: collectNets(netlist), stages: { flat, opt }, asic, asicErr };
+        buildPipe();
         updateViewButtons();
         mode = 'final';
         selectedCell = null;
         stopAnim();
         sEl.overlay.classList.remove('hidden');
         updateStats();
+        renderPipe();
         fillCellList(null);
         showCellInfo(null);
         resize();
@@ -668,10 +672,13 @@
     // ---- 依視圖（FPGA / ASIC）更新整個介面：標題、stats、側欄、報告 ----
     function updateViewButtons() {
       const ok = !!(S && S.asic);
-      sEl.viewAsic.disabled = !ok;
-      sEl.viewAsic.title = ok ? 'ASIC 視圖：NAND2/INV/MUX2/AOI21/DFF 標準單元、row-based 佈局' : '（此晶片 ASIC 流程失敗，不可用）';
-      sEl.viewFpga.classList.toggle('cur', !asicMode);
-      sEl.viewAsic.classList.toggle('cur', asicMode);
+      if (sEl.viewSeg) {
+        sEl.viewSeg.value = asicMode ? 'asic' : 'fpga';
+        const optAsic = sEl.viewSeg.querySelector('option[value="asic"]');
+        optAsic.disabled = !ok;
+        optAsic.textContent = ok ? 'ASIC' : 'ASIC（不可用）';
+        sEl.viewSeg.title = ok ? '切換 FPGA／ASIC 後端視圖' : '（此晶片 ASIC 流程失敗，不可用）';
+      }
       sEl.synTitle.textContent = asicMode
         ? '合成 → ASIC 標準單元 row 佈局 / STA'
         : '合成 → FPGA LUT4 佈局 / 繞線 / 時序';
@@ -688,8 +695,132 @@
         ? '（FPGA 專屬：ASIC 佈局本身就把 critical path 用紅框標出）'
         : '顯示最終繞線＋紅色 Critical Path＋Fmax';
       sEl.hint.textContent = asicMode
-        ? '點 cell 看標準單元細節（延遲／面積／row）；紅框＝Critical Path（含 clk-q＋setup）；寬度 ∝ 面積；右上 FPGA／ASIC 可切回'
-        : '點格子看 LUT／DFF 真值表；紅色為 Critical Path；金框為 I/O Pad；右上 FPGA／ASIC 可切換';
+        ? '點 cell 看標準單元細節（延遲／面積／row）；紅框＝Critical Path（含 clk-q＋setup）；寬度 ∝ 面積；階段列左側 FPGA／ASIC 可切回'
+        : '點格子看 LUT／DFF 真值表；紅色為 Critical Path；金框為 I/O Pad；階段列左側 FPGA／ASIC 可切換';
+    }
+
+    // ---- 流程階段條（RTL→Logic → Tech-indep → Tech-dep → Placement → Routing → STA）----
+    function buildPipe() {
+      const flat = S.stages?.flat, opt = S.stages?.opt;
+      if (!S.pipeViews) S.pipeViews = { fpga: { idx: 0 }, asic: { idx: 0 } };
+      const short = (n) => (n.length > 18 ? n.slice(0, 18) + '…' : n);
+      const typeCnt = (gates) => {
+        const m = { NAND: 0, DFF: 0 };
+        for (const g of gates) m[g.type] = (m[g.type] || 0) + 1;
+        return Object.entries(m).filter(([, v]) => v).map(([k, v]) => `${k}×${v}`).join('、');
+      };
+      // -- 共用前端階段 --
+      const common = [
+        { k: 'rtl', l: '① RTL→Logic',
+          i: ['ElabChip：top = ' + S.top + '，自上而下遞迴展開階層實例樹，直到 Nand／DFF 原語。',
+            '做法：parseHdl → elab（建 chip 庫與依賴圖，偵測循環）→ 遞迴 flatten 合併實例前綴。',
+            '',
+            `對象晶片：${S.top}`,
+            `展平後位元級網表輸入數：${flat.primaryInputs.length}（含 slice 逐位元拆開）`,
+            `主要輸出（PO）：${flat.primaryOutputs.length}`,
+            `（上面三項對應展平結果；完整階層樹可另開「檢視電路圖」逐層點入。）`].join('\n') },
+        { k: 'flat', l: '② Logic Netlist',
+          i: ['展平成位元級 NAND／DFF 網表（技術無關的表達）。',
+            `閘總數 ${flat.gates.length}（${typeCnt(flat.gates)}）、PI ${flat.primaryInputs.length}、PO ${flat.primaryOutputs.length}`,
+            '多重輸出連線（out=t, out=out）與 slice 綁定（out[0..7]=outLow）會統一為 per-bit 別名，避免孤兒 net。',
+            '',
+            '前 6 個 gate：',
+            ...flat.gates.slice(0, 6).map((g, i) => `  ${i}: ${g.type}(${g.in.join(', ')}) → ${short(g.out)}`),
+            '',
+            `主要輸出：${flat.primaryOutputs.slice(0, 8).map(short).join(', ')}${flat.primaryOutputs.length > 8 ? ' …' : ''}`].join('\n') },
+        { k: 'opt', l: '③ Tech-indep Syn',
+          i: [`與製程無關的化簡：常數傳遞（0/1 折疊）、double-NOT 消除、反向 alias、死碼（fanout=0）清除。`,
+            `閘數 ${flat.gates.length} → ${opt.gates.length}（省 ${flat.gates.length - opt.gates.length}）`,
+            'FPGA／ASIC 從這步之後分流：④ 是「科技相關」的分水嶺。',
+            '',
+            `化簡後主要輸出：${opt.primaryOutputs.slice(0, 8).map(short).join(', ')}${opt.primaryOutputs.length > 8 ? ' …' : ''}`,
+            `化簡後 PI：${opt.primaryInputs.length}、PO：${opt.primaryOutputs.length}`].join('\n') },
+      ];
+      // -- FPGA 後端 --
+      const net = S.netlist, res = S.result;
+      const segCnt = res.routing.routedNets.reduce((s, n) => s + n.segments.length, 0);
+      const fpga = [
+        ...common,
+        { k: 'map', l: '④ LUT4 Techmap',
+          i: [`科技相關映射（technology dependent）：NAND 邏輯錐貪婪打包進 4-LUT，卡住 leaf 迭代升級 Root。`,
+            `${net.luts.length} LUT4 ＋ ${net.dffs.length} DFF（raw ${net.stats.rawGates} 閘）`,
+            '',
+            '前 6 顆 LUT（inputs ↔ init 對應真值表欄位）：',
+            ...net.luts.slice(0, 6).map((l) => `  ${l.id}: out=${short(l.out)} inputs=(${l.inputs.join(', ')}) init=${l.hex}`),
+            ...(net.dffs.length ? ['前 3 顆 DFF：', ...net.dffs.slice(0, 3).map((d) => `  ${d.id}: in=${short(d.in)} out=${short(d.out)}`)] : [])].join('\n') },
+        { k: 'place', l: '⑤ Placement 退火',
+          i: [`模擬退火（SA）佈局：${res.grid.width}×${res.grid.height} CLB 格＋周邊 ${res.placement.padPos.size} 個 I/O pad，目標 density ${res.stats.density}。`,
+            `成本＝HPWL（半周長線長）：${S.snapshots[0]?.cost ?? '—'} → ${res.stats.cost ?? S.snapshots[S.snapshots.length - 1]?.cost}；${S.snapshots.length} 溫度層取樣可「▶ 退火動畫」重播。`,
+            '點 cell：左側清單或畫布上，可看 LUT 真值表。'].join('\n') },
+        { k: 'route', l: '⑥ Global+Detail Routing',
+          i: [`曼哈頓迷宮走線：driver → 水平段 → 垂直段 → sink（CLB 或 pad）。`,
+            `${res.routing.routedNets.length} 條 net、共 ${segCnt} 段繞線。`,
+            '藍色＝一般 net；紅色＝critical path 上的 net（⑦ STA 決定）。'].join('\n') },
+        { k: 'sta', l: '⑦ Timing (STA)',
+          i: [`前向 arrival：LUT 1.2 ns＋每格線距 0.25 ns；DFF 開新時脈域。`,
+            `Critical path ${res.stats.criticalPathNs} ns → Fmax ≈ ${res.stats.fmaxMHz} MHz`,
+            '',
+            (res.timing.criticalPath?.length ? 'critical path cells：' : '') +
+            (res.timing.criticalPath?.length ? '\n' + res.timing.criticalPath.slice(0, 8).map((c) => `  ${c.id || c}`).join(' → ') : ''),
+            '（畫布上紅色走線與紅框 cell 即這條路徑）'].join('\n') },
+      ];
+      // -- ASIC 後端 --
+      let asic = null;
+      if (S.asic) {
+        const an = S.asic.netlist, art = S.asic.result;
+        const types = Object.entries(an.stats.cellTypeCounts).map(([k, v]) => `${k}×${v}`).join(' ');
+        asic = [
+          ...common,
+          { k: 'map', l: '④ Standard Cell Map',
+            i: [`科技相關映射：NAND 基底 ＋ MUX2 / AOI21 圖樣重寫（兩階段：先 MUX 後 AOI，避免鏈節點被搶走）。`,
+              `${an.stats.rawGates} NAND → ${an.stats.cellCount} cells（${types}）`,
+              `總面積 ${an.stats.areaUm2} µm²（STDCELL：NAND2 2、INV 1、MUX2 4、AOI21 3.2、DFF 8 µm²）`,
+              '',
+              '前 8 顆 cell：',
+              ...an.cells.slice(0, 8).map((c) => `  ${c.id}: ${c.type} in=(${c.in.map(short).join(', ')}) out=${short(c.out)}`)].join('\n') },
+          { k: 'place', l: '⑤ Row Placement',
+            i: [`row-based 容器式佈局（無退火）：拓撲 level 成列，DFF 輸出重置 level。`,
+              `${art.stats.rowCount} 列（列高 2.2 µm）、最寬列 ${art.stats.maxRowWidthUm} µm；cell 佔寬 ∝ 面積。`,
+              '點 cell 可看延遲/面積/setup/clk-q。'].join('\n') },
+          { k: 'route', l: '⑥ Detail Routing',
+            i: ['（本工具未做多層金屬繞線引擎；真實流程要 M1…Mn 通道路由＋DRC/LVS）',
+              `用 driver↔sink 曼哈頓距離估計總線長 ≈ ${art.stats.totalWireUm} µm，`,
+              'STA 以 0.01 ns/µm 折減線延遲、0.02 ns/sink 負載。'].join('\n') },
+          { k: 'sta', l: '⑦ Timing (STA)',
+            i: [`經驗 delay 模型：cell delay ＋ 0.02·fanout ＋ 0.01·線 µm；DFF 邊界拆 setup / hold。`,
+              `Critical ${art.timing.criticalPathNs} ns → Fmax ≈ ${art.timing.fmaxMHz} MHz；hold slack ${art.timing.holdSlackNs ?? '—'} ns`,
+              '',
+              art.timing.criticalPath?.length ? 'critical path cells：\n' + art.timing.criticalPath.slice(0, 8).map((c) => `  ${c.cell}(${c.type}) → ${c.out}`).join(' → ') : '',
+              '（row 圖紅框即 critical path cell）'].join('\n') },
+        ];
+      }
+      S.pipeFpga = fpga;
+      S.pipeAsic = asic;
+      S.pipeIdx = { fpga: 0, asic: 0 };
+    }
+
+    function renderPipe() {
+      if (!S || !S.pipeViews) return;
+      const list = asicMode ? S.pipeAsic : S.pipeFpga;
+      if (!list) { sEl.pipeChips.innerHTML = ''; sEl.pipeInfo.textContent = ''; return; }
+      const view = asicMode ? 'asic' : 'fpga';
+      const idx = Math.min(S.pipeIdx[view], list.length - 1);
+      const chips = [];
+      list.forEach((st, i) => {
+        if (i > 0) chips.push('<span class="arrow">→</span>');
+        // 階段 ①..③ 是 FPGA／ASIC 共用前端，④ 起屬各自後端——在圓籤上直接標示
+        const tag = i < 3 ? '共' : (asicMode ? 'A' : 'F');
+        const cls = [i === idx ? 'cur' : '', i < 3 ? '' : (asicMode ? 'taga' : 'tagf')].join(' ').trim();
+        chips.push(`<button data-i="${i}" class="${cls}">${tag} ${st.l}</button>`);
+      });
+      sEl.pipeChips.innerHTML = chips.join('');
+      for (const b of sEl.pipeChips.querySelectorAll('button')) {
+        b.onclick = () => { S.pipeIdx[view] = Number(b.dataset.i); renderPipe(); };
+      }
+      const st = list[idx];
+      sEl.pipeInfo.textContent = `${st.l}\n${st.i}`;
+      if (mode === 'anim') { stopAnim(); mode = 'final'; }
+      draw();
     }
 
     function asicGeom() {
@@ -717,10 +848,91 @@
 
     const ASIC_COL = { INV: '#7f8ea3', NAND2: '#a86ea0', MUX2: '#4fae7f', AOI21: '#c98a3d', DFF: '#1d4a63' };
 
+    // 各階段畫圖；前端階段與 FPGA 共用 abstract 圖，④ 起才畫 cell／row 佈局
+    function drawAsicStage(ctx) {
+      const idx = stageIdx();
+      if (idx <= 2) {
+        const gates = (idx === 2 ? S.stages?.opt : S.stages?.flat)?.gates || [];
+        const cap = idx === 0
+          ? '① RTL→Logic：Elab 階層展開完成 → 位元級 NAND/DFF 網表'
+          : idx === 1 ? '② Logic Netlist：展平後位元級 NAND/DFF'
+            : '③ Tech-indep Opt：化簡後網表（與 FPGA 共用，再進 Cell Map）';
+        drawAbstract(ctx, gates, cap);
+        return;
+      }
+      if (idx === 3) {
+        // ④ Standard Cell Map：cell 以 type 塗色排成 level 網格（邏輯視圖、尚未 placement）
+        const cells = S.asic.netlist.cells;
+        drawAbstract(ctx, cells, `④ Standard Cell Map：${S.asic.netlist.stats.cellCount} cells（NAND 基底＋MUX2/AOI21 圖樣）`, ASIC_COL);
+        return;
+      }
+      drawAsic(ctx);
+      // ⑤~⑦ 都畫 row 佈局（含 ⑥ 線長估計、⑦ critical path 紅框）
+    }
+
+    // 抽象網表圖：level 分欄的小方塊（門／cell 通用）
+    function drawAbstract(ctx, items, caption, colorOf) {
+      const cols = new Map(); // level -> items 順序
+      const levelOf = new Map();
+      const drv = new Map();
+      for (const g of items) if (g.out) drv.set(g.out, g);
+      const getLv = (net) => {
+        if (levelOf.has(net)) return levelOf.get(net);
+        levelOf.set(net, 0);
+        let lv = 0;
+        const g = drv.get(net);
+        if (g) {
+          const ins = g.in.map(getLv).filter((x) => Number.isFinite(x));
+          lv = g.type === 'DFF' ? 0 : (ins.length ? Math.max(...ins) + 1 : 0);
+        }
+        levelOf.set(net, lv);
+        return lv;
+      };
+      for (const g of items) getLv(g.out);
+      const maxLv = Math.max(0, ...levelOf.values());
+      for (let l = 0; l <= maxLv; l++) cols.set(l, []);
+      for (const g of items) cols.get(levelOf.get(g.out) || 0).push(g);
+
+      const W = sEl.canvas.width, Hc = sEl.canvas.height;
+      const nCol = maxLv + 1;
+      const colW = (W - 120) / Math.max(1, nCol);
+      const box = Math.max(4, Math.min(14, colW - 4));
+      const maxCnt = Math.max(1, ...cols.values().map((a) => a.length));
+      const rowH = Math.min(box + 2, (Hc - 90) / maxCnt);
+
+      ctx.strokeStyle = '#232b36';
+      for (let l = 0; l <= nCol; l++) {
+        ctx.beginPath();
+        ctx.moveTo(64 + l * colW, 52); ctx.lineTo(64 + l * colW, Hc - 20); ctx.stroke();
+      }
+      for (const [lv, slots] of cols) {
+        slots.forEach((g, i) => {
+          const x = 64 + lv * colW + (colW - box) / 2;
+          const y = 54 + i * rowH;
+          const color = colorOf ? (ASIC_COL[g.type] || '#888') : (g.type === 'DFF' ? '#1d4a63' : `hsl(${hue(g.out)},45%,42%)`);
+          ctx.fillStyle = color;
+          ctx.fillRect(x, y, box, box * .8);
+          if (colW >= 34 && maxCnt <= 42 && box >= 7) {
+            // 圖上文字：type ＋ 輸出 net 名（數量多時略去以免糊成一團）
+            ctx.fillStyle = '#8fa3bb'; ctx.font = '8px monospace';
+            const sym = g.type === 'INV' ? 'INV' : g.type === 'DFF' ? 'DFF' : 'NAND';
+            ctx.fillText(`${sym}→${g.out.length > 10 ? g.out.slice(0, 10) + '…' : g.out}`, x + box + 2, y + box * .8);
+          }
+        });
+      }
+      ctx.fillStyle = '#9fb2c8'; ctx.font = '12px monospace';
+      ctx.fillText(caption, 8, 30);
+      const nand = items.filter((g) => g.type === 'NAND').length;
+      const inv2 = items.filter((g) => g.type === 'INV').length;
+      const dff2 = items.filter((g) => g.type === 'DFF').length;
+      ctx.fillText(`${items.length} 單元（level 0…${nCol - 1}；NAND ${nand}、INV ${inv2}、DFF ${dff2}）`, 8, Hc - 8);
+    }
+
     function drawAsic(ctx) {
       const { rowH, pxUm, xOff, yOff, rows } = asicGeom();
       const critList = S.asic.result.timing.criticalPath;
       const critOuts = new Set(critList.map((c) => c.out));
+      const itemsCntAsic = S.asic.netlist.stats.cellCount;
       ctx.strokeStyle = '#232b36'; ctx.lineWidth = 1;
       rows.forEach((r, i) => {
         ctx.beginPath();
@@ -746,6 +958,11 @@
           if (w >= 26 && rowH >= 12) {
             ctx.fillStyle = '#e8edf4'; ctx.font = '9px monospace';
             ctx.fillText(c.type, x + 2, y + h - 2);
+          }
+          if (w >= 52 && rowH >= 12 && itemsCntAsic <= 260) {
+            // 夠寬的 cell 額外標輸出 net 名
+            ctx.fillStyle = '#9fb2c8'; ctx.font = '8px monospace';
+            ctx.fillText(c.out.length > 12 ? c.out.slice(0, 12) + '…' : c.out, x + 2, y + h - 2 - (w >= 26 && rowH >= 12 ? 9 : 0));
           }
         }
       }
@@ -814,9 +1031,30 @@
     function draw() {
       const ctx = sEl.canvas.getContext('2d');
       ctx.clearRect(0, 0, sEl.canvas.width, sEl.canvas.height);
-      if (asicMode && S.asic) return drawAsic(ctx);
-      if (!S || mode === 'anim') return drawAnimFrame(ctx);
-      drawFinal(ctx);
+      if (!S) return;
+      if (mode === 'anim') return drawAnimFrame(ctx);
+      if (asicMode && S.asic) return drawAsicStage(ctx);
+      return drawFpgaStage(ctx);
+    }
+
+    // ---- 各階段畫圖 ----
+    // 階段 1–3（RTL→Logic / Netlist / Tech-indep Opt）：畫抽象邏輯圖（level 分欄的小方塊）
+    function stageIdx() {
+      return Math.min(S.pipeIdx[asicMode ? 'asic' : 'fpga'], 6);
+    }
+
+    function drawFpgaStage(ctx) {
+      const idx = stageIdx();
+      if (idx <= 2) {
+        const gates = (idx === 2 ? S.stages?.opt : S.stages?.flat)?.gates || [];
+        const cap = idx === 0
+          ? '① RTL→Logic：Elab 階層展開完成 → 位元級 NAND/DFF 網表'
+          : idx === 1 ? '② Logic Netlist：展平後位元級 NAND/DFF' : '③ Tech-indep Opt：化簡後網表（FPGA／ASIC 由此分流）';
+        drawAbstract(ctx, gates, cap);
+        return;
+      }
+      drawFinal(ctx, idx === 4 ? { routing: false } : {});
+      // idx 4=Placement 顯示 Grid+pads 不畫繞線；5/6=完整繞線+STA
     }
 
     function drawAnimFrame(ctx) {
@@ -903,7 +1141,7 @@
       ctx.fillText(`HPWL 收斂 ${cmin}..${cmax}`, cx0 + 4, cy0 - 3);
     }
 
-    function drawFinal(ctx) {
+    function drawFinal(ctx, opts = {}) {
       const { result, netlist, selectedCell } = S;
       const g = geom();
       const critSet = new Set(result.timing.criticalPath);
@@ -926,7 +1164,8 @@
           ctx.fillText(padLabelOf(name), p.sx + 1, p.sy + g.cellPx - 4);
         }
       }
-      // 繞線：一般線（含到 pad 的 sink）
+      // 繞線：一般線（含到 pad 的 sink）——Placement 階段（⑤）不畫
+      const showRouting = opts.routing !== false;
       const isCrit = (k) => critSet.has(k);
       const drawSeg = (seg, color, width, dash) => {
         const p1 = xyOf(g, seg.x1, seg.y1), p2 = xyOf(g, seg.x2, seg.y2);
@@ -939,14 +1178,16 @@
         if (dash) ctx.setLineDash(dash);
         ctx.stroke(); ctx.setLineDash([]);
       };
-      for (const rn of result.routing.routedNets) {
-        if (isCrit(rn.driver)) continue;
-        for (const seg of rn.segments) drawSeg(seg, 'rgba(126,195,255,.22)', 1);
-      }
-      // Critical Path 紅色走線
-      for (const rn of result.routing.routedNets) {
-        if (!isCrit(rn.driver)) continue;
-        for (const seg of rn.segments) drawSeg(seg, '#ff9b8a', 2.2);
+      if (showRouting) {
+        for (const rn of result.routing.routedNets) {
+          if (isCrit(rn.driver)) continue;
+          for (const seg of rn.segments) drawSeg(seg, 'rgba(126,195,255,.22)', 1);
+        }
+        // Critical Path 紅色走線
+        for (const rn of result.routing.routedNets) {
+          if (!isCrit(rn.driver)) continue;
+          for (const seg of rn.segments) drawSeg(seg, '#ff9b8a', 2.2);
+        }
       }
       // CLB
       for (const [id, c] of result.placement.pos) {
@@ -1201,8 +1442,16 @@
         sEl.reportText.textContent = lines.join('\n');
       }
     };
-    sEl.replay.onclick = () => { if (asicMode) return; startAnim(); };
-    sEl.finalBtn.onclick = () => { stopAnim(); mode = 'final'; sEl.replay.textContent = '▶ 退火動畫'; draw(); };
+    sEl.replay.onclick = () => {
+      if (asicMode) return;
+      if (S) { S.pipeIdx.fpga = 4; renderPipe(); } // ▶ 退火動畫＝切到 ⑤ Placement 階段
+      startAnim();
+    };
+    sEl.finalBtn.onclick = () => {
+      stopAnim(); mode = 'final'; sEl.replay.textContent = '▶ 退火動畫';
+      if (!asicMode && S) { S.pipeIdx.fpga = 5; renderPipe(); } // ⏭=切到 ⑥ Routing 階段
+      draw();
+    };
     const setView = (aimAsic) => {
       if (!S) return;
       if (aimAsic && !S.asic) return;
@@ -1210,12 +1459,12 @@
       if (asicMode) { stopAnim(); mode = 'final'; selectedCell = null; }
       updateViewButtons();
       updateStats();
+      renderPipe();
       fillCellList(null);
       showCellInfo(null);
       resize();
     };
-    sEl.viewFpga.onclick = () => setView(false);
-    sEl.viewAsic.onclick = () => setView(true);
+    sEl.viewSeg.onchange = () => setView(sEl.viewSeg.value === 'asic');
     sEl.canvas.onclick = (ev) => {
       if (!S) return;
       const r = sEl.canvas.getBoundingClientRect();
