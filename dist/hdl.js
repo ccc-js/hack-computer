@@ -1065,13 +1065,28 @@
       return name.replace(/^n_/, '').replace(/\[\d+\]/, '·') || name;
     }
 
+    // ---- 畫布縮放/平移（wheel 縮放、空白拖曳平移；hit test 一併換算）----
+    let view = { s: 1, tx: 0, ty: 0 };
+    const isZoom = () => view.s !== 1 || view.tx !== 0 || view.ty !== 0;
+    function resetView() { view = { s: 1, tx: 0, ty: 0 }; mayResize(); }
+    function mayResize() { if (S) resize(); else draw(); }
+
     function draw() {
       const ctx = sEl.canvas.getContext('2d');
       ctx.clearRect(0, 0, sEl.canvas.width, sEl.canvas.height);
       if (!S) return;
-      if (mode === 'anim') return drawAnimFrame(ctx);
-      if (asicMode && S.asic) return drawAsicStage(ctx);
-      return drawFpgaStage(ctx);
+      if (isZoom()) { ctx.save(); ctx.translate(view.tx, view.ty); ctx.scale(view.s, view.s); }
+      if (mode === 'anim') drawAnimFrame(ctx);
+      else if (asicMode && S.asic) drawAsicStage(ctx);
+      else drawFpgaStage(ctx);
+      if (isZoom()) {
+        ctx.restore();
+        // 縮放提示角標
+        ctx.fillStyle = 'rgba(30,38,48,.85)';
+      ctx.fillRect(sEl.canvas.width - 118, sEl.canvas.height - 26, 110, 18);
+        ctx.fillStyle = '#9fb2c8'; ctx.font = '11px monospace';
+        ctx.fillText(`${Math.round(view.s * 100)}%（雙擊重設）`, sEl.canvas.width - 118, sEl.canvas.height - 13);
+      }
     }
 
     // ---- 各階段畫圖 ----
@@ -1538,6 +1553,34 @@
       resize();
     };
     sEl.viewSeg.onchange = () => setView(sEl.viewSeg.value === 'asic');
+    // 畫布縮放（滾輪，以游標為中心）/平移（拖空白處）/雙擊重設
+    sEl.canvas.addEventListener('wheel', (ev) => {
+      if (!S) return;
+      ev.preventDefault();
+      const r = sEl.canvas.getBoundingClientRect();
+      const d = (sEl.canvas.width || 1) / Math.max(1, r.width);
+      const cx = (ev.clientX - r.left) * d, cy = (ev.clientY - r.top) * d;
+      const f = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const ns = Math.min(12, Math.max(0.3, view.s * f));
+      view.tx = cx - (cx - view.tx) * (ns / view.s);
+      view.ty = cy - (cy - view.ty) * (ns / view.s);
+      view.s = ns;
+      draw();
+    }, { passive: false });
+    let panPrev = null;
+    sEl.canvas.addEventListener('mousedown', (ev) => { panPrev = { x: ev.clientX, y: ev.clientY }; });
+    sEl.canvas.addEventListener('mousemove', (ev) => {
+      if (!panPrev || !S) return;
+      const r = sEl.canvas.getBoundingClientRect();
+      const d = (sEl.canvas.width || 1) / Math.max(1, r.width);
+      view.tx += (ev.clientX - panPrev.x) * d;
+      view.ty += (ev.clientY - panPrev.y) * d;
+      panPrev = { x: ev.clientX, y: ev.clientY };
+      draw();
+    });
+    sEl.canvas.addEventListener('mouseup', () => { panPrev = null; });
+    sEl.canvas.addEventListener('mouseleave', () => { panPrev = null; });
+    sEl.canvas.addEventListener('dblclick', () => { if (S) { resetView(); } });
     sEl.canvas.onclick = (ev) => {
       if (!S) return;
       // 座標：CSS px → backing px（resize() 以 rect×dpr 設定 canvas.width，比例正好是 dpr）
@@ -1545,6 +1588,9 @@
       const dpr = (sEl.canvas.width || 1) / Math.max(1, r.width);
       const cx = (ev.clientX - r.left) * dpr;
       const cy = (ev.clientY - r.top) * dpr;
+      // 反縮放：換回未變換座標（各 draw* 仍用原始座標系）
+      const cxu = (cx - view.tx) / view.s;
+      const cyu = (cy - view.ty) / view.s;
       // 抽象網表階段（①②③／ASIC ④ cell map）畫的是邏輯層次視圖，沒有可點選的
       // 實體位置——此時不做 hit test 直接清選取，避免拿「最終佈局」的座標對到錯的元件。
       const idx = stageIdx();
@@ -1552,7 +1598,7 @@
         if (idx <= 3) {
           // 抽象階段：以最近一次 drawAbstract 記下的 hit rects 比對（由上而下）
           const rects = (S.absRects || []).slice().reverse();
-          const hit = rects.find((rc) => cx >= rc.x && cx <= rc.x + rc.w + (rc.lw || 0) && cy >= rc.y && cy <= rc.y + rc.h) || null;
+          const hit = rects.find((rc) => cxu >= rc.x && cxu <= rc.x + rc.w && cyu >= rc.y && cyu <= rc.y + rc.h) || null;
           showGateInfo(hit && hit.item);
           return;
         }
@@ -1563,7 +1609,7 @@
             const x = xOff + c.x * pxUm;
             const y = yOff + c.row * rowH;
             const w = Math.max(3, c.w * pxUm - 1);
-            if (cx >= x && cx <= x + w && cy >= y && cy <= y + rowH - 2) { hit = c.id; break; }
+            if (cxu >= x && cxu <= x + w && cyu >= y && cyu <= y + rowH - 2) { hit = c.id; break; }
           }
           if (hit) break;
         }
@@ -1572,13 +1618,13 @@
       }
       if (idx <= 2) {
         const rects = (S.absRects || []).slice().reverse();
-        const hit = rects.find((rc) => cx >= rc.x && cx <= rc.x + rc.w && cy >= rc.y && cy <= rc.y + rc.h) || null;
+        const hit = rects.find((rc) => cxu >= rc.x && cxu <= rc.x + rc.w && cyu >= rc.y && cyu <= rc.y + rc.h) || null;
         showGateInfo(hit && hit.item);
         return;
       }
       const g = geom();
-      const gx = Math.floor((cx - g.ox) / g.cellPx) - 1;
-      const gy = Math.floor((cy - g.oy) / g.cellPx) - 1;
+      const gx = Math.floor((cxu - g.ox) / g.cellPx) - 1;
+      const gy = Math.floor((cyu - g.oy) / g.cellPx) - 1;
       let hit = null;
       for (const [id, c] of S.result.placement.pos) {
         if (c.x === gx && c.y === gy) { hit = id; break; }
