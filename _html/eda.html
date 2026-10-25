@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<!-- 
+  _html/eda.html — EDA 互動電子書（第 1 本：以本系統 hackjs「合成 LUT」浮層為講解對象）
+  內容：lib/fpga/（MicroSyn＋MicroPnR）＋ lib/asic/（AsicSyn＋AsicPnR）Mini-EDA 原理
+  範例連結都指向 ../dist/hdl.html#case=…，點開即跑真實流程；程式碼片段取自 lib/ 原始碼。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDA 互動電子書 — 以 hackjs 合成 LUT 為例</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'PingFang TC', 'Microsoft JhengHei', ui-monospace, monospace;
+         background: #12161c; color: #dce1e8; line-height: 1.75; }
+  a { color: #7ec3ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { position: sticky; top: 0; z-index: 5; background: #1a2028; border-bottom: 1px solid #3a4a5e;
+           padding: 10px 18px; display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sub { font-size: 12px; color: #9fb2c8; }
+  main { display: grid; grid-template-columns: 220px 1fr; gap: 0; min-height: calc(100vh - 46px); }
+  nav { border-right: 1px solid #2a3441; background: #171c23; padding: 14px 10px; font-size: 13px;
+        position: sticky; top: 46px; height: calc(100vh - 46px); overflow: auto; }
+  nav a { display: block; padding: 4px 8px; border-radius: 5px; color: #9fb2c8; }
+  nav a:hover { background: #232b36; color: #e6ecf4; text-decoration: none; }
+  nav .gap { height: 10px; }
+  article { max-width: 860px; padding: 26px 34px 120px; }
+  section { margin-bottom: 56px; scroll-margin-top: 60px; }
+  h2 { font-size: 20px; border-bottom: 1px solid #33405a; padding-bottom: 6px; }
+  h3 { font-size: 15px; color: #8fd0ff; }
+  code { background: #232b36; border: 1px solid #333f52; border-radius: 4px; padding: 1px 5px;
+         font-size: 13px; color: #d8e4f2; }
+  pre { background: #141a21; border: 1px solid #2f3b4d; border-radius: 8px; padding: 12px 14px;
+        overflow: auto; font-size: 12.5px; line-height: 1.55; position: relative; }
+  pre .cm { color: #6f8fae; }  /* 註解 */
+  pre .kw { color: #7ec3ff; }  /* 關鍵字 */
+  pre .st { color: #a8d8a8; }  /* 字串 */
+  pre .hint { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #5b6e85; }
+  .src { font-size: 11.5px; color: #78909f; margin-top: -6px; margin-bottom: 16px; }
+  .box { border: 1px solid #3a556e; border-left: 4px solid #3d6ea0; background: #1a2230;
+         border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 13.5px; }
+  .warn { border-color: #6e5a3a; border-left-color: #c9973d; background: #241f16; }
+  .demo { border: 1px solid #2f5a3a; border-left: 4px solid #3d8a5a; background: #16211a;
+          border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .btn { display: inline-block; padding: 5px 14px; border-radius: 6px; background: #2a3441;
+         border: 1px solid #435269; color: #dce1e8; cursor: pointer; font-size: 13px; }
+  .btn:hover { background: #35435a; text-decoration: none; }
+  table { border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+  th, td { border: 1px solid #33405a; padding: 4px 10px; text-align: left; }
+  th { background: #1d2530; color: #9fc3e8; }
+  .quiz { border: 1px solid #33405a; border-radius: 8px; padding: 12px 16px; margin: 12px 0; background: #171d25; }
+  .quiz label { display: block; padding: 3px; cursor: pointer; }
+  .quiz .exp { display: none; margin-top: 8px; font-size: 12.5px; color: #9fc3e8; border-top: 1px dashed #33405a; padding-top: 6px; }
+  .gloss dt { font-weight: 600; color: #8fd0ff; margin-top: 8px; }
+  .gloss dd { margin: 0 0 4px 0; font-size: 13px; color: #b8c4d4; }
+  .flow { font-size: 12.5px; background: #141a21; border: 1px solid #2f3b4d; border-radius: 8px;
+          padding: 10px 14px; overflow-x: auto; white-space: pre; color: #aee1ff; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } nav { display: none; } article { padding: 18px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛠 EDA 互動電子書</h1>
+  <span class="sub">以 hackjs「合成 LUT」Mini-EDA（lib/fpga ＋ lib/asic）為講解對象 · 範例直連 ../dist/hdl.html</span>
+</header>
+<main>
+<nav id="toc">
+  <a href="#s1">1. EDA 是什麼？</a>
+  <a href="#s2">2. 全流程總覽</a>
+  <a href="#s3">3. HDL → Elab（前端）</a>
+  <a href="#s4">4. 展平 flattenChip</a>
+  <a href="#s5">5. 與製程無關化簡</a>
+  <a href="#s6">6. FPGA：LUT4 映射</a>
+  <a href="#s7">7. FPGA：佈局/繞線/STA</a>
+  <a href="#s8">8. ASIC：標準單元</a>
+  <a href="#s9">9. ASIC：佈局與時序</a>
+  <a href="#s10">10. 實戰走一圈</a>
+  <a href="#s11">11. 小測驗</a>
+  <a href="#s12">12. 名詞表</a>
+  <div class="gap"></div>
+  <a href="./">← 回 _html/</a>
+</nav>
+<article>
+
+<!-- 1 -->
+<section id="s1">
+<h2>1. EDA 是什麼？</h2>
+<p>EDA（Electronic Design Automation，電子設計自動化）是把「想要的邏輯」自動變成「能跑的電路」的一整條軟體流水線。真實世界的 Synopsys DC、Cadence Innovus 是上百萬行的巨獸；本系統刻意做了一個<strong>能讀懂原始碼的迷你版</strong>——全在 <code>lib/fpga/</code>（FPGA 後端）和 <code>lib/asic/</code>（ASIC 後端），每個階段都只有幾百行，邊跑邊畫圖。</p>
+<div class="box">
+你已經寫好的 <code>Mux16.hdl</code> 是<strong>規格</strong>（描述想做什麼）；EDA 工具負責回答四個問題：<br>
+① 攤平成 1-bit 邏輯後長什麼樣？② 哪些閘是多餘的？③ 映射成 LUT 還是標準單元？④ 擺在晶片上哪裡、時鐘能跑多快？
+</div>
+<p>本電子書每個章節 = 本系統的一個階段 + 對應的原始碼摘錄 + 可直接點開的<strong>真實範例連結</strong>（帶網址 hash 開在 <a href="../dist/hdl.html" target="_blank">hdl.html</a> 的合成浮層上）。</p>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+<h2>2. 全流程總覽</h2>
+<div class="flow">.hdl（規格）
+  → ① Elab 章 3        : parseHdl → 階層實例樹 → 依賴圖（含循環偵測）
+  → ② flattenChip 章 4  : 攤平成位元級 NAND/DFF 網表
+  → ③ optimizeGates 章 5: 常數折疊/死碼清除（FPGA 與 ASIC 共用的「技術無關」段）
+  → ├─ FPGA 分流：④ mapToLut 章 6 → ⑤ SA 退火佈局 → ⑥ 曼哈頓繞線 → ⑦ STA   〔MicroSyn＋MicroPnR〕
+  → └─ ASIC 分流：④ 圖樣映射 章 8 → ⑤ row 佈局 → ⑥ 線長估計 → ⑦ 經驗 STA    〔AsicSyn＋AsicPnR〕</div>
+<p>前端 ①②③ 兩種後端完全共用（在 hdl.html 階段列上就標成 <code>共①②③</code>），第 ④ 步才因「科技」分家——這正是真實 EDA 的術語：<strong>technology independent</strong> vs <strong>technology dependent</strong>。</p>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+<h2>3. HDL → Elab（前端）</h2>
+<p><code>lib/hdl/parser.js</code> 把 HDL 文字變 AST；<code>lib/hdl/elab.js</code> 再把 AST 變成<strong>晶片庫 + 階層實例樹</strong>。關鍵概念：</p>
+<ul>
+<li><strong>晶片庫</strong>：目錄裡所有 <code>.hdl</code> 各是一個節點，內建原語（Nand、DFF、ARegister…）由 <code>Builtin</code> 表提供。</li>
+<li><strong>遞迴展開</strong>：CPU 引用 ALU，ALU 引用 Add16… 直到撞到原語為止。</li>
+<li><strong>循環偵測</strong>：A 用 B、B 用 A 直接報錯，不會掛死。</li>
+</ul>
+<pre><span class="hint">lib/hdl/elab.js（摘錄）</span><span class="kw">export class</span> Elab {
+  <span class="kw">constructor</span>(chips, names, top) {
+    <span class="kw">this</span>.chips = chips;      <span class="cm">// idx → Chip（含實例樹）</span>
+    <span class="kw">this</span>.names = names;      <span class="cm">// 晶片名 → idx</span>
+    <span class="kw">this</span>.top = top;
+  }
+}</pre>
+<p class="src">▲ Elab 就是一個雙向查表：拿名字找晶片、拿晶片找它的子實例。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=../02/Inc16" target="_blank">../dist/hdl.html#case=../02/Inc16</a> →
+按「合成 LUT」→ 第 ① 階段會寫出 top 與 PI/PO 統計；想看階層樹本身可按「檢視電路圖」逐層點入。</div>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+<h2>4. 展平 flattenChip</h2>
+<p>Elb 後的實例樹仍是有階層的（ALLOC 名字形如 <code>n_Or16_0/Or_1/notb_5</code>）。<code>flattenChip</code> 遞迴展開，把每個實例的輸入對位、輸出接線統一成<strong>全域 net 名</strong>，得到一張巨大的位元級表：</p>
+<pre><span class="hint">lib/fpga/synthesis.js — flattenChip（核心摘錄）</span>
+<span class="kw">for</span> (<span class="kw">const</span> slot <span class="kw">of</span> chip.evalOrder) {
+  <span class="kw">const</span> part = chip.parts[slot];
+  <span class="kw">if</span> (part.clip.kind === <span class="st">'Builtin'</span>) {
+    <span class="kw">const</span> b = part.clip.b;
+    <span class="kw">if</span> (b === Builtin.Nand) {
+      <span class="kw">const</span> inA = resolveSrcBit(part.inConns[0][0].src, 0);
+      <span class="kw">const</span> inB = resolveSrcBit(part.inConns[1][0].src, 0);
+      <span class="kw">const</span> q = resolveOutBitsFor(part, 1);
+      <span class="kw">if</span> (q[0]) gates.push({ type: <span class="st">'NAND'</span>, in: [inA, inB], out: q[0] });
+      <span class="cm">// q[0]==null：此 Nand 的輸出沒接任何 Wire——是死碼，不推入</span>
+    } <span class="kw">else if</span> (b === Builtin.Dff) { … }
+  } <span class="kw">else</span> recurse(childChip, partPrefix, …);  <span class="cm">// 自訂子晶片：遞迴展開</span>
+}</pre>
+<p class="src">▲ 每個閘＝ { type, in[], out } 三個欄位；<code>q[0]</code> 的 null 防禦是修過的真實 bug（CPU.hdl 展平會產 2 顆 out=undefined 的死 NAND，撞壞下游客戶端）。</p>
+<div class="box">展平率的直覺：16-bit 晶片 × 每層 ×N 個實例 → Mux16 展平 128 閘、CPU 展平 2,680 閘。<strong>閘數暴增是分層級描述的代價，所以第 5 章的化簡很重要。</strong></div>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+<h2>5. 與製程無關的化簡 optimizeGates</h2>
+<p>兩種後端在這一步<strong>共用</strong>：跑固定點迴圈，每輪三件事——<strong>alias 追蹤</strong>（backpoint 到真正的 driver）、<strong>常數折疊</strong>（NAND(0,x)=1 全往上游縮）、<strong>死碼清除</strong>（fanout=0 的閘自動被下一輪丟掉）。</p>
+<pre><span class="hint">lib/fpga/synthesis.js — optimizeGates（核心摘錄）</span>
+<span class="kw">while</span> (changed) {
+  <span class="kw">const</span> nextGates = [];
+  <span class="kw">for</span> (<span class="kw">const</span> g <span class="kw">of</span> gates) {
+    <span class="kw">const</span> in0 = getRoot(g.in[0]);
+    <span class="kw">const</span> in1 = getRoot(g.in[1]);
+    <span class="kw">if</span> (g.type === <span class="st">'NAND'</span> &amp;&amp; (in0 === <span class="st">'0'</span> || in1 === <span class="st">'0'</span>)) {
+      alias.set(g.out, <span class="st">'1'</span>); changed = <span class="kw">true</span>; <span class="kw">continue</span>;  <span class="cm">// NAND(0,x)=1</span>
+    }
+    <span class="kw">if</span> (in0 === <span class="st">'1'</span> &amp;&amp; in1 === <span class="st">'1'</span>) {
+      alias.set(g.out, <span class="st">'0'</span>); changed = <span class="kw">true</span>; <span class="kw">continue</span>;  <span class="cm">// NAND(1,1)=0</span>
+    }
+    g.in[0] = in0; g.in[1] = in1;
+    nextGates.push(g);
+  }
+  gates = nextGates;
+}</pre>
+<p class="src">▲ 收斂 (<strong>fixed-point</strong>) 迴圈是所有優化器的骨架：每輪把一個閘吃成常數或別名，改不動為止。</p>
+<p>化簡效率取決於電路「寫得多冗餘」：</p>
+<table>
+<tr><th>晶片</th><th>② 展平後</th><th>③ 化簡後</th><th>原因</th></tr>
+<tr><td><a href="../dist/hdl.html#case=../02/Inc16" target="_blank">Inc16</a></td><td>384</td><td><b>224（−42%）</b></td><td>double-NOT 鏈全消</td></tr>
+<tr><td><a href="../dist/hdl.html#case=../03/b/PC" target="_blank">PC</a></td><td>912</td><td><b>640（−30%）</b></td><td>Mux 條件傳播</td></tr>
+<tr><td><a href="../dist/hdl.html#case=../05/CPU" target="_blank">CPU</a></td><td>2680</td><td><b>2224（−17%）</b></td><td>控制訊號常數摺疊</td></tr>
+<tr><td><a href="../dist/hdl.html#case=../01/Mux16" target="_blank">Mux16</a></td><td>128</td><td>128（0%）</td><td>結構本來就最簡</td></tr>
+</table>
+<div class="demo">💡 <strong>動手看</strong>：點上表晶片連結 → 合成 LUT → 分別按 ② 與 ③，Inc16 會看到方塊少四成、報告列 <code>384 → 224（省 160）</code>。</div>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+<h2>6. FPGA：LUT4 映射</h2>
+<p>FPGA 的原料只有兩種：<strong>K-LUT</strong>（本系統用 K=4）與 <strong>DFF</strong>。任何 ≤4 輸入的邏輯都被折進一顆 LUT，LUT 的 <code>init</code> 位元串是真值表展開。</p>
+<p>演算法是<strong>貪婪邏輯錐擴張</strong>：從每個輸出往上游收 4-input 錐，塞滿為止；塞不下的節點升級成新 Root 繼續收。</p>
+<pre><span class="hint">lib/fpga/synthesis.js — mapToLut（骨幹摘錄）</span>
+<span class="kw">const</span> stopSet = <span class="kw">new</span> Set(<span class="st">'primary inputs'</span>);  <span class="cm">// PI 是每顆 LUT 的葉</span>
+<span class="kw">let</span> cone = [root];
+<span class="kw">while</span> (cone.length &lt;=<span class="cm"> 錐上限</span>) {
+  <span class="kw">for</span> (<span class="const">n</span> <span class="kw">of</span> 候選) {
+    <span class="kw">if</span> (inputsUsed(n) + leafCount(n) &gt; maxLutInputs) <span class="cm">// 卡住 → 節點升級 leaf</span>
+      leafs.push(n);
+    <span class="kw">else</span> cone.push(n);
+  }
+}
+<span class="cm">// init 真值表：對 2^K 種組合評估整個錐</span>
+<span class="kw">const</span> init = evaluateCone(cone, leafs, root);   <span class="cm">// 位元串 → hex</span></pre>
+<p class="src">▲ 摘錄有省略（完整實作在 lib/fpga/synthesis.js <code>mapToLut()</code>）；重點是「錐大小 ≤ K ⇒ 無論函數多複雜，一定塞得進一顆 LUT」。</p>
+<div class="box"><strong>為什麼 LUT 是 FPGA 的魔法？</strong>真值表可以實作任何 ≤K 輸入的函數——NAND 網表結構在映射那刻就「蒸發」了，硬體裡只剩 16-bit 的 <code>init</code> 常數。</div>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=../05/CPU" target="_blank">../dist/hdl.html#case=../05/CPU</a> → 合成 LUT → 第 ④ 階段：CPU 會出 344 顆 LUT4 ＋ 48 顆 DFF；點任一 LUT 可看它的 <code>hex</code> 真值表。</div>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+<h2>7. FPGA：佈局、繞線、STA</h2>
+<p>映射完只是「知道有哪些元件」，還要知道<strong>放在格子上哪</strong>、<strong>怎麼連線</strong>、<strong>多快</strong>。</p>
+<h3>⑤ 模擬退火佈局</h3>
+<pre><span class="hint">lib/fpga/pnr.js — 骨幹摘錄</span>
+<span class="cm">// 成本函數＝Σ HPWL（半周長線長），各 net 的 x-y 界盒寬+高</span>
+hpwl = Σ (maxX-minX) + (maxY-minY)
+<span class="kw">for</span> (<span class="kw">const</span> temp <span class="kw">of</span> 溫度排程) {
+  onSample({ temp, cost });                 <span class="cm">← 退火動畫取樣（hdl.html ▶ 重播）</span>
+  swapTwoRandomCells();                     <span class="cm">← 提案：交換兩個隨機 cell</span>
+  <span class="kw">if</span> (Δcost &lt; 0 || Math.random() &lt; Math.exp(-Δcost/temp)) <span class="cm">// 退火接受</span>
+    keep();
+  <span class="kw">else</span> undo();
+}</pre>
+<p class="src">▲ 「先讓壞解也逃走（高溫）→ 慢慢只接受變好（低溫）」就是退火本體；<code>onSample</code> 回呼是 hdl.html「▶ 退火動畫」能重播的原因。</p>
+<h3>⑥ 曼哈頓繞線</h3>
+<pre><span class="hint">lib/fpga/pnr.js — route(...)</span>
+<span class="cm">// driver → 水平段 → 垂直段 → sink 的迷宮搜尋；一 net 一 path</span>
+<span class="kw">const</span> path = [src, {x: src.x, y: dst.y}, dst];   <span class="cm">// L 形兩段</span></pre>
+<h3>⑦ 靜態時序分析</h3>
+<pre><span class="hint">lib/fpga/pnr.js — analyzeTiming(getArrival 摘錄)</span>
+<span class="kw">const</span> getArrival = (netName) =&gt; {
+  <span class="kw">if</span> (arrivalTimes.has(netName)) <span class="kw">return</span> arrivalTimes.get(netName);  <span class="cm">← memo</span>
+  <span class="kw">const</span> lut = cellMap.get(netName);
+  <span class="kw">if</span> (!lut) <span class="kw">return</span> 0.0;                       <span class="cm">// DFF 輸出＝週期起點</span>
+  <span class="kw">let</span> maxIn = 0.0;
+  <span class="kw">for</span> (<span class="kw">const</span> i <span class="kw">of</span> lut.inputs) {
+    <span class="kw">const</span> arr = getArrival(i);                 <span class="cm">← 遞迴取最慢上游</span>
+    <span class="kw">const</span> dist =曼哈頓距離(i, netName);
+    <span class="kw">const</span> t = arr + <span class="kw">this</span>.lutDelay + dist * <span class="kw">this</span>.wireDelay;  <span class="cm">// 1.2ns + 0.25ns/格</span>
+    <span class="kw">if</span> (t &gt; maxIn) maxIn = t;
+  }
+  arrivalTimes.set(netName, maxIn);
+  <span class="kw">return</span> maxIn;
+};</pre>
+<p class="src">▲ 物理模型只有兩個參數：<code>lutDelay</code>（LUT 本身 1.2ns）與 <code>wireDelay</code>（每格曼哈頓距離 0.25ns）。Fmax = 1000 / critical-path。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=../02/ALU" target="_blank">../dist/hdl.html#case=../02/ALU</a> → 第 ⑦ 階段，紅色走線與紅框 cell 是 critical path；再按「▶ 退火動畫」重看⑤的收斂過程（HPWL 會越變越小）。</div>
+</section>
+
+<!-- 8 -->
+<section id="s8">
+<h2>8. ASIC：標準單元映射</h2>
+<p>ASIC 的原料是<strong>標準單元庫</strong>，面積/延遲有單位、要付錢。本系統的 cell 庫刻意超小（5 種）：</p>
+<pre><span class="hint">lib/asic/synth.js — STDCELL</span>
+<span class="kw">export const</span> STDCELL = {
+  INV:   { area: 1.0, delay: 0.08 },
+  NAND2: { area: 2.0, delay: 0.12 },
+  AOI21: { area: 3.2, delay: 0.16 }, <span class="cm">// out = !((a &amp; b) | c)</span>
+  MUX2:  { area: 4.0, delay: 0.20 }, <span class="cm">// out = s ? a : b</span>
+  DFF:   { area: 8.0, delay: 0.30, setup: 0.15, hold: 0.05, clkq: 0.30 },
+};</pre>
+<p>映射是<strong>peephole 圖樣重寫</strong>：在 NAND 網表上找特定子形狀、換成大 cell 升級：</p>
+<table>
+<tr><th>圖樣</th><th>撿到的形狀</th><th>換成</th><th>省</th></tr>
+<tr><td>NOT</td><td>NAND(x,x)</td><td>INV</td><td>面積 2→1</td></tr>
+<tr><td>MUX2</td><td>d=NAND(u,v)，u/v 各自經 INV 鏈補出一對互補訊號</td><td>MUX2</td><td>11 NAND→1 MUX2＋2 INV</td></tr>
+<tr><td>AOI21</td><td>d=NAND(n1,NAND(a,b)) 且 n1/NAND(a,b) 各被 INV 一次</td><td>AOI21＋INV</td><td>面積 6→4.2</td></tr>
+</table>
+<pre><span class="hint">lib/asic/synth.js — 決策順序註解（摘錄）</span>
+<span class="cm">// 兩階段：先全體試 MUX2 圖樣（較大收益、鏈較深，若被 AOI 搶走鏈</span>
+<span class="cm">// 節點會失敗），再對剩餘未匹配的 gate 補試 AOI21 圖樣。</span></pre>
+<p class="src">▲ 「圖樣匹配順序」是真實 EDA（Technology Mapping）的核心工程：搶錯子形狀會讓鄰居無法匹配。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=../02/ALU" target="_blank">../dist/hdl.html#case=../02/ALU</a> → 合成 LUT → 階段列左側下拉切「ASIC」→ 第 ④ 標準單元映射：ALU 594 cells（NAND2×127 / MUX2×95 / AOI21×77 / INV×295）、面積 100+ µm²。</div>
+</section>
+
+<!-- 9 -->
+<section id="s9">
+<h2>9. ASIC：佈局與時序</h2>
+<p>ASIC 佈局是 <strong>row-based</strong>：兩圖樣不同、但精神一樣——電路按拓撲 level 成列（DFF 輸出會 reset level），每個 cell 佔的寬度 ∝ STDCELL 的 <code>area</code>；沒有退火、確定式。</p>
+<div class="box"><strong>為何 ASIC 沒有退火？</strong>FPGA 是 free-grid，隨便擺都放得下、要靠退火壓線長。ASIC 的 cell 全要塞進固定列、列寬對齊，工程上先用確定式壓好、再交給更專業的 placer 迭代——這裡刻意保留「能看、能教」的簡化版。</div>
+<p>繞線是<strong>估的</strong>（多層金屬通道路由＋DRC/LVS 是巨獸中的巨獸）：driver↔sink 曼哈頓距離合計；STA 的延遲模型也從「格距」換成「cell＋fanout＋線長」：</p>
+<pre><span class="hint">lib/asic/pnr.js — delay 延遲模型（概念摘錄）</span>
+delay(cell) = STDCELL[cell.type].delay
+            + 0.02 * fanout(cell)     <span class="cm">// 負載</span>
+            + 0.01 * wireUm(cell);    <span class="cm">// 估出來的線長（ns/µm）</span>
+<span class="cm">// 時序路徑分兩段：setup = clk-q + combinational + setup(time)</span>
+<span class="cm">// hold  = clk-q + combination 的最短路徑 ≥ hold(peer)</span></pre>
+<p class="src">▲ 上面的 0.01/0.02 是經驗係數（不是可靠製程參數），<code>holdSlackNs</code> 給 ASIC 視圖的第 ⑦ 階段文報告。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=../02/ALU" target="_blank">../dist/hdl.html#case=../02/ALU</a>（ASIC 視圖）→ 第 ⑦ 階段：critical path cell 紅框；側欄點 cell 可看延遲/面積/row。</div>
+</section>
+
+<!-- 10 -->
+<section id="s10">
+<h2>10. 實戰走一圈（跟著 URL 打卡）</h2>
+<p>下面 5 條連結涵蓋整條流程，<strong>依序點開並按「合成 LUT」</strong>：</p>
+<table>
+<tr><th>#</th><th>練什麼</th><th>連結</th></tr>
+<tr><td>1</td><td>最小 e2e：一個 Mux8 級（層次 1，好點、好讀）</td><td><a href="../dist/hdl.html#case=../01/Mux8Way16" target="_blank">#case=../01/Mux8Way16</a></td></tr>
+<tr><td>2</td><td>化簡幅度：看 ③ 相對 ② 省多少（−42%）</td><td><a href="../dist/hdl.html#case=../02/Inc16" target="_blank">#case=../02/Inc16</a></td></tr>
+<tr><td>3</td><td>時序邏輯：含 DFF 邊界、STA 拆 setup/hold</td><td><a href="../dist/hdl.html#case=../03/b/PC" target="_blank">#case=../03/b/PC</a></td></tr>
+<tr><td>4</td><td>大電路：CPU（344 LUT＋48 DFF、ASIC 1348 cells）</td><td><a href="../dist/hdl.html#case=../05/CPU" target="_blank">#case=../05/CPU</a></td></tr>
+<tr><td>5</td><td>互動密度：重看退火動畫（⑥ 拖「▶」）</td><td><a href="../dist/hdl.html#case=../02/ALU" target="_blank">#case=../02/ALU</a></td></tr>
+</table>
+<div class="warn">⚠ <code>Memory.tst</code> 需人工按鍵，會自動跳過；首次開啟請先按右上「合成 LUT」按鈕才會出階段列。</div>
+</section>
+
+<!-- 11 -->
+<section id="s11">
+<h2>11. 小測驗</h2>
+<div class="quiz" data-q="1">
+<b>Q1</b>. 為什麼 LUT 映射之後，原來的 NAND 網表可以「忘掉」？<br>
+<label><input type="radio" name="q1" value="a">A. FPGA 上不存在 NAND 閘</label>
+<label><input type="radio" name="q1" value="b">B. ≤4 輸入的任何函數都用 LUT 的 init 位元串直接實作，閘結構在映射那刻就被取代</label>
+<label><input type="radio" name="q1" value="c">C. 工具不存 NAND 資訊，是為了保密</label>
+<div class="exp" data-exp="1">✔ B。LUT 是 truth-table 元件，16-bit init 常數就能表現任何 4 輸入函數；原閘結構在映射後無意義。</div>
+</div>
+<div class="quiz" data-q="2">
+<b>Q2</b>. 以下哪一步 FPGA 與 ASIC <strong>完全共用</strong>？<br>
+<label><input type="radio" name="q2" value="a">A. mapToLut（LUT4 映射）</label>
+<label><input type="radio" name="q2" value="b">B. flattenChip＋optimizeGates（技術無關段）</label>
+<label><input type="radio" name="q2" value="c">C. row-based 佈局</label>
+<div class="exp" data-exp="2">✔ B。第 ①②③ 段兩後端完全一樣，A 是 FPGA 專屬、C 是 ASIC 專屬。</div>
+</div>
+<div class="quiz" data-q="3">
+<b>Q3</b>. CPU 展平 2,680 閘、Mux16 也展平 128 閘；哪個化簡空間大？<br>
+<label><input type="radio" name="q3" value="a">A. Mux16（120 閘全可化簡）</label>
+<label><input type="radio" name="q3" value="b">B. CPU（控制訊號常數摺疊 456 閘）</label>
+<label><input type="radio" name="q3" value="c">C. 一樣，都是 0%</label>
+<div class="exp" data-exp="3">✔ B。CPU 2680→2224；Mux16 結構本來就最簡 0 差異（連結見第 5 章表格）。</div>
+</div>
+<div class="quiz" data-q="4">
+<b>Q4</b>. 退火的「接受準則」<code>Δcost&lt;0 || rand &lt; exp(-Δ/temp)</code> 中，<code>temp</code> 下降代表的意義？<br>
+<label><input type="radio" name="q4" value="a">A. 一直反擴大隨機跳走範圍</label>
+<label><input type="radio" name="q4" value="b">B. 後期只接受更小的壞步、收斂到局部較優</label>
+<label><input type="radio" name="q4" value="c">C. 誤差，不用理會</label>
+<div class="exp" data-exp="4">✔ B。temp 控制接受壞解的機率——高溫多逃、低溫多收斂，就是退火的本意。</div>
+</div>
+<div style="margin:12px 0">
+  <button class="btn" onclick="checkQuiz(this)">✔ 對答案</button>
+  <span id="quizScore" style="color:#8fd0ff"></span>
+</div>
+</section>
+
+<!-- 12 -->
+<section id="s12">
+<h2>12. 名詞表</h2>
+<dl class="gloss">
+<dt>netlist（網表）</dt><dd>一堆閘＋net 連線的表；本系統的位元級格式是 { type, in[], out }。</dd>
+<dt>alias / root driver</dt><dd>同一 net 的多個名字；`getRoot()` 會串到真正驅動它的閘。</dd>
+<dt>錐（cone）</dt><dd>從某輸出往上游一路收進來的子電路；LUT 映射＝把錐切成 ≤4 葉的小塊。</dd>
+<dt>HPWL</dt><dd>Half-Perimeter Wire Length，所有 net 界盒半周長總和；佈局成本的標準近似。</dd>
+<dt>STA</dt><dd>Static Timing Analysis，靜態時序分析。不跑模擬、用圖上最長路徑估 Fmax。</dd>
+<dt>setup / hold / clk-q</dt><dd>DFF 三個時序參數，STDCELL 裡都有單位數值。</dd>
+<dt>technology mapping</dt><dd>把「與製程無關的閘」改寫為「能買得到的 cell／LUT」，④ 的本體。</dd>
+<dt>peephole</dt><dd>局部小視窗的圖樣匹配重寫；ASIC 映射用這招找 MUX2/AOI21。</dd>
+</dl>
+<div class="box" style="margin-top:24px">
+📚 本書原始碼與實作分散在：<code>lib/hdl/</code>（第 3 章）、<code>lib/fpga/</code>（第 4–7 章）、
+<code>lib/asic/</code>（第 8–9 章）；UI 端在 <code>dist/hdl.js</code>。有興趣改：先跑
+<code>node --test test/test_syn_pnr.js</code> 和 <code>node --test test/test_asic.js</code> 確認綠燈，再動手。
+</div>
+</section>
+
+</article>
+</main>
+<script>
+  // 測驗
+  function checkQuiz(btn) {
+    let ok = 0, total = 0;
+    const answers = { q1: 'b', q2: 'b', q3: 'b', q4: 'b' };
+    for (const q of Object.keys(answers)) {
+      total++;
+      const sel = document.querySelector('input[name=' + q + ']:checked');
+      const exp = document.querySelector('.exp[data-exp="' + q.slice(1) + '"]');
+      if (exp) exp.style.display = 'block';
+      if (sel && sel.value === answers[q]) ok++;
+    }
+    document.getElementById('quizScore').textContent = ok + ' / ' + total + ' 正確';
+  }
+</script>
+</body>
+</html>

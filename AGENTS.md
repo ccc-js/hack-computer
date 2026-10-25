@@ -80,6 +80,32 @@ hackjs：Nand2Tetris 全工具鏈的 JavaScript 版（零依賴 ESM，Node ≥ 2
   改 `dist/*.js` 後把引用它的 `?v=` 版號＋1（快取用；
   `index.html`/`hdl.html` 的 `embed.js` 連帶一起加）。
 
+## 合成 LUT 浮層（hdl.html；`lib/fpga/` MicroSyn＋MicroPnR、`lib/asic/` AsicSyn＋AsicPnR）
+
+- 「合成 LUT」＝ FPGA／ASIC 雙後端 mini-EDA：共用 `MicroSyn.flattenChip`（NAND/DFF 展平）
+  → `optimizeGates`（常數傳遞/double-NOT/死碼）→ 分流：
+  FPGA＝LUT4 Techmap→SA 退火佈局（CLB 格）→曼哈頓繞線→STA（LUT 1.2ns＋0.25ns/格）；
+  ASIC＝MUX2/AOI21 圖樣映射（NAND2/INV/MUX2/AOI21/DFF）→row-based 佈局（level 成列、
+  cell 佔寬 ∝ 面積）→線長估計→經驗 STA（cell＋0.02·fanout＋0.01·µm）。
+- `dist/hdl.js` 界面：階段列在繪圖區**上方獨立條**（不擋畫布），chips 標 `共①②③／F④…／A④…`（
+  tagf 藍、taga 土黃）；最左 `<select id="synViewSeg">` 切 FPGA／ASIC（ASIC 流程失敗時選項禁用）；
+  右側 `▶ 退火動畫`（FPGA 專屬）、`⏭ 繞線/時序`、`⌨ 合成報告`、`⌁ 連線：開`。
+  `#synPipeInfo` 是多行階段報告（`white-space: pre-wrap`，max-height 160 可捲）。
+- 階段畫圖：①②③+F③=abstract level 分欄方塊（連線 ≤160 單元才畫）；F④→drawFinal
+  （網格＋pad）、⑤⑥ 網格＋繞線；A④ abstract（ASIC_COL 塗色）、⑤⑥⑦ row 圖。
+  點方塊＝hit-test（FPGA ④⑤⑥⑦／ASIC ⑤⑥⑦ 用實體座標；抽象階段用 `S.absRects` 邏輯視圖），
+ 點取的金框高亮 `selectedCell`。
+- 畫布支援滾輪縮放（0.3–12×、游標為中心）、拖曳平移、雙擊重設；draw() 進場套
+  ctx.translate/scale，hit-test 座標反縮換算（`view={s,tx,ty}`）。
+- 已修坑：`flattenChip` 的 `resolveOutBitsFor` 在實例輸出未接 Wire 時回 null——Nand/Dff
+  須跳過不推入（CPU 展平會混進 out=undefined 死閘，撞報告 `short().length`）。
+  新程式碼讀 gate/cell 欄位一律防禦 null。
+- 化簡差異明顯的示範晶片：Inc16 384→224（-42%）、PC 912→640；And/Mux/DMux 系列 0 差異
+  （③ 畫面會標「＝②（本電路無可化簡項）」）。
+- 測試：`test/test_syn_pnr.js`（FPGA 6）＋`test/test_asic.js`（ASIC 6，cell 網表 vs NAND
+  參考逐 net 等效）；UI/版號檢查在 `test/test_schematic.js`。
+- 版號現值：`hdl.js?v=40`、`embed.js?v=22`（index/hdl 兩頁連帶），改到哪 bump 到哪。
+
 ## 慣例
 
 - 價值判斷：文件、註解、`_doc/v*.md` 版本紀錄一律**繁體中文**；VM 轉出的每行前加

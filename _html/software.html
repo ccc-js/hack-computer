@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<!-- 
+  _html/software.html — Software 互動電子書（第 3 本：以本系統 hackjs 的軟體線為講解對象）
+  範圍：Jack → jack2vm → VM 碼 → vm2asm → hackasm → .hack/.bin → hackemu；
+        以及第二執行路徑 vm2riscv → rvasm → rvemu（含 OS 全量與 Pong 互動）。
+  範例連結都指向 ../dist/jack.html、../dist/index.html、../dist/rvemu.html；程式碼片段取自 lib/ 原始碼。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Software 互動電子書 — 以 hackjs 軟體線為例</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'PingFang TC', 'Microsoft JhengHei', ui-monospace, monospace;
+         background: #12161c; color: #dce1e8; line-height: 1.75; }
+  a { color: #7ec3ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { position: sticky; top: 0; z-index: 5; background: #1a2028; border-bottom: 1px solid #3a4a5e;
+           padding: 10px 18px; display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sub { font-size: 12px; color: #9fb2c8; }
+  main { display: grid; grid-template-columns: 220px 1fr; gap: 0; min-height: calc(100vh - 46px); }
+  nav { border-right: 1px solid #2a3441; background: #171c23; padding: 14px 10px; font-size: 13px;
+        position: sticky; top: 46px; height: calc(100vh - 46px); overflow: auto; }
+  nav a { display: block; padding: 4px 8px; border-radius: 5px; color: #9fb2c8; }
+  nav a:hover { background: #232b36; color: #e6ecf4; text-decoration: none; }
+  nav .gap { height: 10px; }
+  article { max-width: 860px; padding: 26px 34px 120px; }
+  section { margin-bottom: 56px; scroll-margin-top: 60px; }
+  h2 { font-size: 20px; border-bottom: 1px solid #33405a; padding-bottom: 6px; }
+  h3 { font-size: 15px; color: #8fd0ff; }
+  code { background: #232b36; border: 1px solid #333f52; border-radius: 4px; padding: 1px 5px;
+         font-size: 13px; color: #d8e4f2; }
+  pre { background: #141a21; border: 1px solid #2f3b4d; border-radius: 8px; padding: 12px 14px;
+        overflow: auto; font-size: 12.5px; line-height: 1.55; position: relative; }
+  pre .cm { color: #6f8fae; }
+  pre .kw { color: #7ec3ff; }
+  pre .st { color: #a8d8a8; }
+  pre .hint { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #5b6e85; }
+  .src { font-size: 11.5px; color: #78909f; margin-top: -6px; margin-bottom: 16px; }
+  .box { border: 1px solid #3a556e; border-left: 4px solid #3d6ea0; background: #1a2230;
+         border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 13.5px; }
+  .warn { border-color: #6e5a3a; border-left-color: #c9973d; background: #241f16; }
+  .demo { border: 1px solid #2f5a3a; border-left: 4px solid #3d8a5a; background: #16211a;
+          border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .btn { display: inline-block; padding: 5px 14px; border-radius: 6px; background: #2a3441;
+         border: 1px solid #435269; color: #dce1e8; cursor: pointer; font-size: 13px; }
+  .btn:hover { background: #35435a; text-decoration: none; }
+  table { border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+  th, td { border: 1px solid #33405a; padding: 4px 10px; text-align: left; }
+  th { background: #1d2530; color: #9fc3e8; }
+  .quiz { border: 1px solid #33405a; border-radius: 8px; padding: 12px 16px; margin: 12px 0; background: #171d25; }
+  .quiz label { display: block; padding: 3px; cursor: pointer; }
+  .quiz .exp { display: none; margin-top: 8px; font-size: 12.5px; color: #9fc3e8; border-top: 1px dashed #33405a; padding-top: 6px; }
+  .gloss dt { font-weight: 600; color: #8fd0ff; margin-top: 8px; }
+  .gloss dd { margin: 0 0 4px 0; font-size: 13px; color: #b8c4d4; }
+  .flow { font-size: 12.5px; background: #141a21; border: 1px solid #2f3b4d; border-radius: 8px;
+          padding: 10px 14px; overflow-x: auto; white-space: pre; color: #aee1ff; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } nav { display: none; } article { padding: 18px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧩 Software 互動電子書</h1>
+  <span class="sub">以 hackjs 軟體線（Jack→VM→Hack/ RISC-V）為講解對象 · 範例直連 ../dist/jack.html・index.html・rvemu.html</span>
+</header>
+<main>
+<nav id="toc">
+  <a href="#s1">1. 軟體線是什麼？</a>
+  <a href="#s2">2. 兩條執行路徑</a>
+  <a href="#s3">3. Jack 語言與符號表</a>
+  <a href="#s4">4. jack2vm：語意→VM</a>
+  <a href="#s5">5. VM 碼的 8 條句法</a>
+  <a href="#s6">6. vm2asm：寫真 Hack 組語</a>
+  <a href="#s7">7. hackasm 與 hackemu</a>
+  <a href="#s8">8. OS 的角色</a>
+  <a href="#s9">9. 第二路徑：vm2riscv</a>
+  <a href="#s10">10. 驗證系統與打卡清單</a>
+  <a href="#s11">11. 小測驗</a>
+  <a href="#s12">12. 名詞表</a>
+  <div class="gap"></div>
+  <a href="./">← 回 _html/</a>
+</nav>
+<article>
+
+<!-- 1 -->
+<section id="s1">
+<h2>1. 軟體線是什麼？</h2>
+<p>Nand2Tetris 的後半程（projects 06–11）是軟體這一半：我們自己寫<strong>編譯器</strong>和<strong>OS</strong>，把程式掉到一台自建電腦（Hack 機／RV32 機）上跑。本系統把它全部重寫成 JavaScript 工具鏈：</p>
+<div class="box">
+你寫的 <code>Main.jack</code> → 被編成 VM 碼（<code>jack2vm</code>）→ 被翻成組語（Hack 或 RISC-V）→ 被組成機器碼 → 跑在模擬器上。所有中間分鋪物都<strong>真實可看</strong>，不只視覺結果（遊戲／輸出），還能看每一格 mem、每個 cycle。
+</div>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+<h2>2. 兩條執行路徑</h2>
+<div class="flow">主路徑（HackCPU）：
+  .jack ──jack2vm──▶ .vm ──vm2asm──▶ .asm ──hackasm──▶ .hack/.bin ──hackemu──▶ 螢幕/鍵盤/UART
+
+第二路徑（RISC-V）：
+  .jack ──jack2vm──▶ .vm ──vm2riscv──▶ .s ──rvasm──▶ bytecode ──rvemu──▶ 螢幕鏡像/STATIC/UART
+
+兩路徑共同：前端 Translator「JackParser→Semantics→VM Writer」皆由 lib/jack/* + lib/vm/*（共用）。</div>
+<p><code>jack.html</code> 頁首可切 <code>backend=hackcpu|riscv</code>，兩邊分頁獨立各有自己編譯器＋模擬器分工（<a href="../dist/jack.html" target="_blank">jack.html</a>）。</p>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+<h2>3. Jack 語言與符號表</h2>
+<p>Jack 是一個「教學娃娃任務語言」但有完整 OOP：class/field/static/function/method/constructor。前端 Parser＋語意階段首件大事是<strong>符號表</strong>：</p>
+<pre><span class="hint">lib/jack/ast.js（摘錄）</span>
+<span class="cm">// 符號表分兩層：class 級（static/field）與 subroutine 級（argument/local）</span>
+<span class="kw">this</span>.classSymbols = [];
+<span class="kw">this</span>.subroutineSymbols = [];
+<span class="cm">// lookup 依 scope 由小到大：arg → local → field/static → class</span>
+<span class="kw">const</span> find = (kind) =&gt;
+      <span class="kw">this</span>.subroutineSymbols.find((s) =&gt; s.name === name) ||
+      <span class="kw">this</span>.classSymbols.find((s) =&gt; s.name === name);</pre>
+<p class="src">▲ 編譯器對 VarRef 能解析型別和 offset 全靠兩層符號表；最終 VM 指令如 <code>push this 3</code> 的 3 就是這裡算出來的 field 槽位。</p>
+<table>
+<tr><th>kind</th><th>segment</th><th>star 生活</th></tr>
+<tr><td>argument</td><td>argument</td><td>呼叫者 push 順序傳入</td></tr>
+<tr><td>local</td><td>local</td><td>function 內宣告</td></tr>
+<tr><td>field</td><td>this</td><td>物件概念、堆積（heap）</td></tr>
+<tr><td>static</td><td>static</td><td>類別層自由變數（static pool）</td></tr>
+</table>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+<h2>4. jack2vm：語意→VM</h2>
+<p><code>cli/jack2vm.js</code>&nbsp;是前端編譯器（輸出在來源旁 <code>output/</code>）：算到 <code>.jack → .vm</code> 純文字 VM 碼。每一行 VM 行都會在 VM 轉出處帶回註記，本系統會<strong>在每行前加 <code># &lt;原 Jack 行&gt;</code></strong>，方便對照。</p>
+<pre><span class="hint">lib/jack/jack2vm.js — 表達式鍵（概念摘錄）</span>
+<span class="cm">// let x = x + y; 大致構進為:</span>
+push this 0      <span class="cm">// x</span>
+push local 0     <span class="cm">// y</span>
+add
+pop this 0       <span class="cm">// let 回存</span>
+
+<span class="cm">// if/while 都編到 goto/Label 兩段；呼叫編到 call 指令；</span>
+<span class="cm">// "return this" 左到 hint this。</span></pre>
+<p class="src">▲ Jack 是「無 OS 就能跑」的語言：本系統讓 <code>jackNoOs</code> 系列程式（如 Sum/Fib）不 GET OS 全量也能 run。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/jack.html#prog=Sum" target="_blank">../dist/jack.html#prog=Sum</a> →
+<div>.vm 分頁邊編側看 VM 碼自動出現；想對比 <code>ToVmWriter</code> 生成語法可以按「▶執行」。</div>
+</div>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+<h2>5. VM 碼的 8 條句法</h2>
+<p>本系統實作了 Jack VM 的完整指令表，探最核心 8 條：</p>
+<table>
+<tr><th>分類</th><th>指令</th><th>在本系統的實作檔</th></tr>
+<tr><td>固定記憶</td><td>push/pop × {argument, local, this, that, temp, static, constant, pointer}</td><td>lib/vm/</td></tr>
+<tr><td>算術</td><td>add/sub/neg/eq/gt/lt/and or/not</td><td>全部映射 Hack/RV 指令</td></tr>
+<tr><td>分支</td><td>label/goto/if-goto</td><td>D 旗標（Hack）／beq bne（RV）</td></tr>
+<tr><td>呼叫</td><td>function/call/return</td><td>rgn 動態標籤＋幀</td></tr>
+</table>
+<div class="box"><strong>幀與堆積約定</strong>：s1=SP（0x1C000 向上）、s2..s5=LCL/ARG/THIS/THAT、static 走固定地址 0x11000、heap 在 0x20000（RV 路徑）。更多細節請看 README 與 <code>lib/riscv/vm2riscv.md</code>。</div>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+<h2>6. vm2asm：寫真 Hack 組語</h2>
+<p><code>lib/vm/vm2asm.js</code> 是 VM→Hack 組語後端：每條 VM 指令會<strong>照實吐出等價 Hack 指令</strong>（不是 macro），常用的 push/pop/算術各有標準 Hack 指令序列。模組多檔時會自動加 <code>bootstrap</code>（呼叫 Sys.init）。</p>
+<pre><span class="hint">cli 層三條命令分工</span>
+node cli/jack2vm.js <span class="cm">#   .jack → output/*.vm</span>
+node cli/vm2asm.js  <span class="cm">#   .vm[...] → out.asm（輸出在前；多檔才寫 bootstrap）</span>
+node cli/hackasm.js <span class="cm">#   out.asm → .hack + .bin</span></pre>
+<p class="src">▲ 三段全部獨立可跑；每段都有測試：<code>test/test_vm2riscv.js</code>（42 題）與 README 的 Sum 5050 場景。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/jack.html#prog=Sum" target="_blank">jack.html#prog=Sum</a> → .asm 分頁即（你所想的 Hack 組語）經 key tick 由 vm2asm 生成。</div>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+<h2>7. hackasm 與 hackemu</h2>
+<p>hackasm 和 hackemu 是終端接 tapp：組語→機器碼（.hack 十六進位＋.bin 二教位）；模擬器 headless 鏡行，可 <code>--max</code>／<code>--dump</code> 指定站數和 RAM 區段、可 <code>--keys</code> 鍵盤記錄、可 <code>--trace</code> 追踪。</p>
+<pre><span class="hint">README 的 Sum 場景（CLI 串法）</span>
+node cli/vm2asm.js  /tmp/Sum/sum.asm /tmp/Sum/output/Main.vm /tmp/Sum/output/Sys.vm
+node cli/hackasm.js /tmp/Sum/sum
+node cli/hackemu.js --headless /tmp/Sum/sum.bin --max 500000 | grep "RAM\[16\] static"
+<span class="cm"># RAM[16] = 5050（1+2+…+10）</span></pre>
+<p class="src">▲ headless 模擬器步數上限 10 萬（預設），打印用 <code>RAM[</code> 前綴；Web 版 <code>index.html</code> 是互動版有三欄 UI、單步高亮、RAM/螢幕/鍵盤 互動。</p>
+<div class="demo">💡 <strong>動手玩</strong>：<a href="../dist/index.html#prog=Pong" target="_blank">index.html#prog=Pong</a> → ▶執行，鍵盤左右打起來能看到 hackemu 的鍵盤鏡像反應。</div>
+</section>
+
+<!-- 8 -->
+<section id="s8">
+<h2>8. OS 的角色</h2>
+<p>Jack 的 OS 是<strong>也是一堆 .jack</strong>（Math/Output/Keyboard/String/Array…8 檔，<code>gen/os_src</code>），「編進 VM 全量再一起跑」＝OS 也是被成見到記憶體的普通程式。</p>
+<ul>
+<li><strong>printInt / printString</strong>：在 Ras 路徑已被內聯成 UART（ecall）。</li>
+<li><strong>Math.multiply/divide</strong>：RV 路徑映射成 mul/div 硬指令。</li>
+<li><strong>Keyboard.readChar</strong>：在互動模擬器有鍵盤鏡像，headless 是恆 0 需 <code>--keys</code>。</li>
+</ul>
+<pre><span class="hint">gen/os_src/Output.jack（摘錄：printInt 的主體）</span>
+<span class="cm">// printInt 是 OS 的打印任務，內聯成 UART 指令（Rub 路徑的 instant inlining）</span>
+<span class="cm">// 這樣 OS 全量即使被眾多 Jack 呼叫、也以硬體速度傳輸。</span></pre>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/jack.html#prog=Pong&backend=riscv&run=1" target="_blank">jack.html#prog=Pong&amp;backend=riscv&amp;run=1</a> →
+<div>OS 全量嚴格翻譯跑滿 200 萬步；「▶執行」會送全量 .s 到 RISCV 模擬器，方向鍵可玩 Pong。</div>
+</div>
+</section>
+
+<!-- 9 -->
+<section id="s9">
+<h2>9. 第二路徑：vm2riscv</h2>
+<p>同一分段的 .vm，<code>cli/vm2riscv.js</code> 可以翻出 RV32 組語。兩種風格：</p>
+<table>
+<tr><th>目標</th><th>LEMMA</th></tr>
+<tr><td>rvasm（RV32I+M 子集）</td><td>真指令＋<code>li/mv/j/jr/ret/call</code>；註解 <code>#</code></td></tr>
+<tr><td>靜態/暫存器</td><td>s1=SP、s2..s5=frame、heap 0x20000（Jack word 經 this/that 映射）</td></tr>
+<tr><td>預先檢查</td><td>call 需有 function；strict 失敗 throw、lenient 預覽照發 jal</td></tr>
+</table>
+<pre><span class="hint">終端三步（CLI 串法）</span>
+node cli/jack2vm.js  <span class="cm">#   Pong 目錄 → output/*.vm（含 OS 全量）</span>
+node cli/vm2riscv.js <span class="cm">#   *.vm → pong.s（OS 在前才寫 bootstrap；輸出在前）</span>
+node cli/riscv_run.js pong.s --max 100000 <span class="cm">#   組譯＋定步跑，印 ra/s1/a0＋STATIC＋UART</span></pre>
+<p class="src">▲ RV 路徑的物理映射想法極簡統一：能內聯的都內聯（乘除、輸出）；Jack 的 word 位址經 this/that 映射為 0x20000+4W，寫入後 RAM 鏡像即時重繪。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/rvemu.html#prog=Pong&run=1" target="_blank">rvemu.html#prog=Pong&amp;run=1</a> →
+<div>RISCV 模擬器可以單步（PC 高亮）、速度滑桿；速度滑桿 0..100 對應約 316..10 萬步/幀，預設即每幀一格可玩。</div>
+</div>
+</section>
+
+<!-- 10 -->
+<section id="s10">
+<h2>10. 驗證系統與打卡清單</h2>
+<p>軟體線的驗證測試全在 <code>test/test_vm2riscv.js</code>（42 題回歸），場景包括：chain 5、Sum 5050、Factorial 120、Fib 6765、GCD 63、PrimeUnder100 97、Seven UART <code>7</code>、heap 綜合 <code>Hi!</code>＋<code>333</code>、Pong 方向鍵位移 ≤100px 等。打開互動玩起來：</p>
+<table>
+<tr><th>#</th><th>練什麼</th><th>連結</th></tr>
+<tr><td>1</td><td>最快 hello：無 OS 的 Sum（回答 5050）</td><td><a href="../dist/jack.html#prog=Sum" target="_blank">#prog=Sum</a></td></tr>
+<tr><td>2</td><td>OS 全量：Seven 從 UART 回答 7（RISC-V）</td><td><a href="../dist/jack.html#prog=Seven&backend=riscv" target="_blank">#prog=Seven&amp;backend=riscv</a></td></tr>
+<tr><td>3</td><td>互動：Pong（Hack，方向鍵）</td><td><a href="../dist/index.html#prog=Pong" target="_blank">index.html#prog=Pong</a></td></tr>
+<tr><td>4</td><td>互動：Pong（RISC-V，方向鍵）</td><td><a href="../dist/rvemu.html#prog=Pong&run=1" target="_blank">rvemu.html#prog=Pong&amp;run=1</a></td></tr>
+</table>
+<div class="warn">⚠ Keyboard.readChar 類（如 Average）在 RISC-V headless 會空等；用互動模擬器（有鍵盤鏡像）即可。</div>
+</section>
+
+<!-- 11 -->
+<section id="s11">
+<h2>11. 小測驗</h2>
+<div class="quiz" data-q="1">
+<b>Q1</b>. <code>push this 3</code> 的「3」是編譯器從哪裡算出來的？<br>
+<label><input type="radio" name="q1" value="a">A. 符號表：field 第 3 槽</label>
+<label><input type="radio" name="q1" value="b">B. 行號</label>
+<label><input type="radio" name="q1" value="c">C. VM 碼格式規定恆為 3</label>
+<div class="exp" data-exp="1">✔ A。field/static 符號在 classSymbols 依宣告順序編槽位。</div>
+</div>
+<div class="quiz" data-q="2">
+<b>Q2</b>. vm2asm 多檔輸入才產生 bootstrap 開場，為什麼？<br>
+<label><input type="radio" name="q2" value="a">A. 單檔不需要 OS 呼叫</label>
+<label><input type="radio" name="q2" value="b">B. bootstrap 設定 SP 並呼叫 Sys.init；無 OS 的單檔小程式（如 Sum）不需要</label>
+<label><input type="radio" name="q2" value="c">C. .hack 檔格式限制</label>
+<div class="exp" data-exp="2">✔ A/B 兩句路線差異：bootstrap 是多檔聯結（含 OS）的載入約定；單檔的無 OS 程式（Sum/Fib 系列）直接跑。</div>
+</div>
+<div class="quiz" data-q="3">
+<b>Q3</b>.jackNoOs 程式（Sum/Fib/GCD…）為何能在 RV 路徑靜態跑、不出 UART 輸出？<br>
+<label><input type="radio" name="q3" value="a">A. Jack 編譯器把 printInt 刪掉了</label>
+<label><input type="radio" name="q3" value="b">B. 它們不使用 OS 函數，其結果經 static/RAM 讀回驗收</label>
+<label><input type="radio" name="q3" value="c">C. rvemu 沒有 UART</label>
+<div class="exp" data-exp="3">✔ B。Sum 5050 存 static／RAM 由模擬器讀回比對；用 Output 的程式在 RV 路徑需要 OS 在前（見第 10 章答案）。</div>
+</div>
+<div class="quiz" data-q="4">
+<b>Q4</b>. 本系統在 RISC-V 路徑上「內聯」了哪些 OS 函數？<br>
+<label><input type="radio" name="q4" value="a">A. Math.multiply/divide 與 Output.printInt/printString/println/printChar</label>
+<label><input type="radio" name="q4" value="b">B. Keyboard.readChar</label>
+<label><input type="radio" name="q4" value="c">C. Array.new</label>
+<div class="exp" data-exp="4">✔ A。乘除=硬指令 mul/div，輸出=UART ecall；Keyboard 需物理鍵盤鏡像，readChar 類不內聯。</div>
+</div>
+<div class="quiz" data-q="5">
+<b>Q5</b>. 「產物不 halt」的場景（如 Pong），要開哪裡看答案？<br>
+<label><input type="radio" name="q5" value="a">A. 等模擬器 halt 報碼</label>
+<label><input type="radio" name="q5" value="b">B. 定步 step() 後讀 static／UART，或不限步數（rvemu 上限填 0）直接玩</label>
+<label><input type="radio" name="q5" value="c">C. 逐次 hackemu --max 1 一萬次</label>
+<div class="exp" data-exp="5">✔ B。遊戲類永遠不 halt；以固定步數跑完後讀記憶體（CLI），或在 rvemu 上限填 0 不限步直接玩。</div>
+</div>
+<div style="margin:12px 0">
+  <button class="btn" onclick="checkQuiz(this)">✔ 對答案</button>
+  <span id="quizScore" style="color:#8fd0ff"></span>
+</div>
+</section>
+
+<!-- 12 -->
+<section id="s12">
+<h2>12. 名詞表</h2>
+<dl class="gloss">
+<dt>VM 碼</dt><dd>Jack 編譯後的中間表示；本系統實作 8 條句法族。</dd>
+<dt>bootstrap</dt><dd>多檔輸入的開場碼：設 SP、跳 Sys.init。</dd>
+<dt>堆積（heap）</dt><dd>Jack 的物件/陣列動態空間；Hack 在 RAM 2048+，RV 路徑在 0x20000。</dd>
+<dt>幀（frame）</dt><dd>call/return 的 argument/local/saved 下落位址；LCL/ARG 指向。</dd>
+<dt>static pool</dt><dd>Jack static 變數的專配角（每 .vm 檔一格）。</dd>
+<dt>UART</dt><dd>輸出通道；RV 路徑上 Output print* 內聯後的物理出口。</dd>
+<dt>PC-free</dt><dd>「盯着 static/RAM 觀察」的驗收文化；本系統語言的不 halt 場景。</dd>
+<dt>lenient / strict</dt><dd>未定義 OS 呼叫的兩種處理：嚴格 throw、預覽照發。</dd>
+</dl>
+<div class="box" style="margin-top:24px">
+📚 本書原始碼與實作分散在：<code>lib/jack/</code>（第 3–4 章）、<code>lib/vm/</code>（第 5–6 章）、
+<code>cli/hackasm.js</code>＋<code>cli/hackemu.js</code>（第 7 章）、<code>gen/os_src/</code>（第 8 章）、
+<code>lib/riscv/</code>（第 9 章）。改動請先跑 <code>node --test test/test_vm2riscv.js</code> 與 README 的 Sum 場景確認綠燈。
+</div>
+</section>
+
+</article>
+</main>
+<script>
+  function checkQuiz(btn) {
+    let ok = 0, total = 0;
+    const answers = { q1: 'a', q2: 'b', q3: 'b', q4: 'a', q5: 'b' };
+    for (const q of Object.keys(answers)) {
+      total++;
+      const sel = document.querySelector('input[name=' + q + ']:checked');
+      const exp = document.querySelector('.exp[data-exp="' + q.slice(1) + '"]');
+      if (exp) exp.style.display = 'block';
+      if (sel && sel.value === answers[q]) ok++;
+    }
+    document.getElementById('quizScore').textContent = ok + ' / ' + total + ' 正確';
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<!-- 
+  _html/hardware.html — Hardware 互動電子書（第 2 本：以本系統 hackjs 的硬體線為講解對象）
+  範圍：HDL → hdl2js 編譯 → .tst 測資驅動的 JS 電路模擬；Nand2Tetris 01..05 的硬體旅程；
+        以及本目錄自研的 RISC-V 單週期處理器 Riscv32i/。
+  範例連結都指向 ../dist/hdl.html#case=…，點開即真實模擬；程式碼片段取自 lib/ 原始碼。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hardware 互動電子書 — 以 hackjs HDL 模擬線為例</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'PingFang TC', 'Microsoft JhengHei', ui-monospace, monospace;
+         background: #12161c; color: #dce1e8; line-height: 1.75; }
+  a { color: #7ec3ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { position: sticky; top: 0; z-index: 5; background: #1a2028; border-bottom: 1px solid #3a4a5e;
+           padding: 10px 18px; display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sub { font-size: 12px; color: #9fb2c8; }
+  main { display: grid; grid-template-columns: 220px 1fr; gap: 0; min-height: calc(100vh - 46px); }
+  nav { border-right: 1px solid #2a3441; background: #171c23; padding: 14px 10px; font-size: 13px;
+        position: sticky; top: 46px; height: calc(100vh - 46px); overflow: auto; }
+  nav a { display: block; padding: 4px 8px; border-radius: 5px; color: #9fb2c8; }
+  nav a:hover { background: #232b36; color: #e6ecf4; text-decoration: none; }
+  nav .gap { height: 10px; }
+  article { max-width: 860px; padding: 26px 34px 120px; }
+  section { margin-bottom: 56px; scroll-margin-top: 60px; }
+  h2 { font-size: 20px; border-bottom: 1px solid #33405a; padding-bottom: 6px; }
+  h3 { font-size: 15px; color: #8fd0ff; }
+  code { background: #232b36; border: 1px solid #333f52; border-radius: 4px; padding: 1px 5px;
+         font-size: 13px; color: #d8e4f2; }
+  pre { background: #141a21; border: 1px solid #2f3b4d; border-radius: 8px; padding: 12px 14px;
+        overflow: auto; font-size: 12.5px; line-height: 1.55; position: relative; }
+  pre .cm { color: #6f8fae; }
+  pre .kw { color: #7ec3ff; }
+  pre .st { color: #a8d8a8; }
+  pre .hint { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #5b6e85; }
+  .src { font-size: 11.5px; color: #78909f; margin-top: -6px; margin-bottom: 16px; }
+  .box { border: 1px solid #3a556e; border-left: 4px solid #3d6ea0; background: #1a2230;
+         border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 13.5px; }
+  .warn { border-color: #6e5a3a; border-left-color: #c9973d; background: #241f16; }
+  .demo { border: 1px solid #2f5a3a; border-left: 4px solid #3d8a5a; background: #16211a;
+          border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .btn { display: inline-block; padding: 5px 14px; border-radius: 6px; background: #2a3441;
+         border: 1px solid #435269; color: #dce1e8; cursor: pointer; font-size: 13px; }
+  btn:hover, .btn:hover { background: #35435a; text-decoration: none; }
+  table { border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+  th, td { border: 1px solid #33405a; padding: 4px 10px; text-align: left; }
+  th { background: #1d2530; color: #9fc3e8; }
+  .quiz { border: 1px solid #33405a; border-radius: 8px; padding: 12px 16px; margin: 12px 0; background: #171d25; }
+  .quiz label { display: block; padding: 3px; cursor: pointer; }
+  .quiz .exp { display: none; margin-top: 8px; font-size: 12.5px; color: #9fc3e8; border-top: 1px dashed #33405a; padding-top: 6px; }
+  .gloss dt { font-weight: 600; color: #8fd0ff; margin-top: 8px; }
+  .gloss dd { margin: 0 0 4px 0; font-size: 13px; color: #b8c4d4; }
+  .flow { font-size: 12.5px; background: #141a21; border: 1px solid #2f3b4d; border-radius: 8px;
+          padding: 10px 14px; overflow-x: auto; white-space: pre; color: #aee1ff; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } nav { display: none; } article { padding: 18px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙ Hardware 互動電子書</h1>
+  <span class="sub">以 hackjs HDL 硬體線（hdl2js ＋ .tst 模擬 ＋ Riscv32i 處理器）為講解對象 · 範例直連 ../dist/hdl.html</span>
+</header>
+<main>
+<nav id="toc">
+  <a href="#s1">1. 硬體線是什麼？</a>
+  <a href="#s2">2. 全流程總覽</a>
+  <a href="#s3">3. HDL 的本質</a>
+  <a href="#s4">4. 組合邏輯與 eval()</a>
+  <a href="#s5">5. 時序邏輯與 tick/tock</a>
+  <a href="#s6">6. hdl2js：讓 HDL 變 JS</a>
+  <a href="#s7">7. .tst 測資與 run()</a>
+  <a href="#s8">8. 硬體旅程 01→05</a>
+  <a href="#s9">9. 自研 CPU：Riscv32i</a>
+  <a href="#s10">10. RV32I 測資與觀察</a>
+  <a href="#s11">11. 小測驗</a>
+  <a href="#s12">12. 名詞表</a>
+  <div class="gap"></div>
+  <a href="./">← 回 _html/</a>
+</nav>
+<article>
+
+<!-- 1 -->
+<section id="s1">
+<h2>1. 硬體線是什麼？</h2>
+<p>Nand2Tetris 的前半程（projects 01–05）是用 <strong>HDL</strong> 疊出一台電腦：從 Nand 拼出閘、加法器、ALU、暫存器、記憶體，最後拼出 CPU。本系統把「教科書上的模擬器」重新寫成 JavaScript 工具鏈（<code>cli/hdl2js.js</code>），每個 <code>.hdl</code> 都<strong>即時編譯成可執行的 JS 類別</strong>，<code>.tst</code> 測負責驗證。</p>
+<div class="box">
+「一條硬體線」的價值：你寫的 <code>PC.hdl</code>、<code>ALU.hdl</code> 不只是課本交代版，它們在本系統裡<strong>真的能跑</strong>——被 hdl2js 編譯、被 .tst 驅動 tick/tock，甚至 PC 的偵錯探針讀出那些 RISC-V 指令的執行結果。
+</div>
+<p>這本書講三件事：<strong>邏輯</strong>（閘、組合 vs 時序）、<strong>工具</strong>（hdl2js ＋ .tst）、<strong>旅程</strong>（01→05 的疊法與本目錄自研 CPU）。</p>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+<h2>2. 全流程總覽</h2>
+<div class="flow">.hdl（電路稿）
+  → parseHdl        : 文字 → AST（chip 名、腳位、parts）
+  → elab / lib      : 晶片庫＋實例樹＋Builtin 原語
+  → codegen (hdl2js): 每顆晶片 → 一個 JS 類別（零件實例＋對位連線）
+  → .tst → run()    : 輸入腳位取樣、tick/tock 時脈、輸出與 .cmp 比對
+  → 通過（綠燈）＝此 .hdl 真的按規格工作 ✔
+
+第三支路（本目錄自研）：Riscv32i/rv32i.hdl —— 用同一條 HDL 模擬線跑整顆 RV32I CPU。</div>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+<h2>3. HDL 的本質</h2>
+<p>HDL 不是程式，是<strong>接線圖的文字形式</strong>：<code>PARTS</code> 每一行是一個實例與它的接線（<code>pin=運算式</code>）。關鍵觀念：</p>
+<ul>
+<li><strong>eval 順序由硬體自身決定</strong>：elab 依「先有輸入才可算輸出」排出 <code>evalOrder</code>（拓撲序），不依抄寫順序。</li>
+<li><strong>slice 逐位元</strong>：<code>out[0..7]</code>、<code>in[8..15]</code> 綁定到 per-bit 的 Wire。</li>
+<li><strong>多重輸出動作規則</strong>：同一 net 被多個 part 寫 → 語法錯；同一 part 輸出綁兩條線 → alias。</li>
+</ul>
+<pre><span class="hint">third_party/courses/01/Mux8Way16.hdl（摘錄）</span>
+CHIP Mux8Way16 {
+    IN  in[16], sel[3];
+    OUT out[16];
+    PARTS:
+    Mux4Way16(a=a, b=b, c=c, d=d, sel=sel[0..1], out=r0);  <span class="cm">// …8 路</span>
+    Mux16(a=r0, b=r1, sel=sel[2], out=out);               <span class="cm">// 2 段式選擇</span>
+}</pre>
+<p class="src">▲ 兩段式 8 路 Mux：不是「開關陣列」，而是樹狀組合——HDL 的每行都是真硬體的形狀。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=../01/Mux8Way16" target="_blank">../dist/hdl.html#case=../01/Mux8Way16</a> →
+想看這些實例接什麼，切「檢視電路圖」逐層點入（Mux8Way16 → Mux4Way16 → Mux16 → Nand）。</div>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+<h2>4. 組合邏輯與 eval()</h2>
+<p>組合邏輯的特點：<strong>輸入一變，輸出立刻重算</strong>——沒有記憶。hdl2js 為每個晶片生成的 <code>eval()</code> 就是「依 evalOrder 逐(part) 呼叫子 eval」。</p>
+<pre><span class="hint">lib/hdl/codegen.js — 生成的 eval() 形狀（概念摘錄）</span>
+eval(inputs) {
+  <span class="cm">// TOP: 每個 child 實例一份</span>
+  <span class="kw">const</span> c0 = <span class="kw">new</span> Mux();         <span class="cm">// ← 子實例</span>
+  c0.set('a', va); c0.set('sel', vsel);
+  c0.eval();                     <span class="cm">// ← 子先算</span>
+  <span class="kw">this</span>.set('out', c0.pop('out')); <span class="cm">// ← 父收結果</span>
+}</pre>
+<p class="src">▲ 生成式 eval 由父往子推、子往父收；每個 part 只有「先取 sample、再 eval」一種模式（組合）。</p>
+<div class="box"><strong>檢查點</strong>：Add16 的 16 bit 全在「同一 eval」完成；時間在組合世界是卻不存在的——除非你畫 STA 圖（那是 EDA 書第 7 章的事）。</div>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+<h2>5. 時序邏輯與 tick/tock</h2>
+<p>時序元件（DFF、Register）引入「狀態」和「時脈」。本系統的模型來自 Nand2Tetris 原教科書的 tick/tock：</p>
+<ul>
+<li><strong>eval 前取樣</strong>：時序元件在 eval 讀的是<strong>舊狀態</strong>（out(t)），不會立刻吃到新輸入。</li>
+<li><strong>tick()</strong>：時鐘上升 → latch（回收同時說「我要記住現在輸入」）。</li>
+<li><strong>tock()</strong>：時鐘下降 → <code>q = latch</code>（新狀態總出可見）。</li>
+</ul>
+<pre><span class="hint">lib/hdl/codegen.js — DFF 生成（摘錄）</span>
+<span class="cm">// bit 位元級 DFF：eval() 讀舊值；tick() 收 latch；tock() 公佈 q</span>
+tock() { <span class="kw">this</span>.q = <span class="kw">this</span>.latch; }
+tick() { <span class="kw">this</span>.latch = <span class="kw">this</span>._get(<span class="st">'in'</span>); }</pre>
+<p class="src">▲ 生成式時序元件都有 <code>{latch, q}</code> 兩段式狀態；從 Bit 這顆 1-bit 例子手寫的高階晶片（如 PC）就會真的感覺到「下一次 eval 前不吃新輸入」的規則。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=../03/a/Register" target="_blank">../dist/hdl.html#case=../03/a/Register</a> →
+主面板會逐 tick/tock 跑 .tst；load=1 的那個 tock 之後才看得到 out 改變。</div>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+<h2>6. hdl2js：讓 HDL 變 JS</h2>
+<p>CLI <code>node cli/hdl2js.js --dir DIR [--test F.tst]</code> 是硬體線主入口：讀一串 .hdl → elab 全庫 → <strong>codegen 出成包 JS</strong> → 若指定 .tst 就直接 run 比對 .cmp。本書把 codegen 三段重要規則整理：</p>
+<table>
+<tr><th>規則</th><th>生成物</th><th>在意義上</th></tr>
+<tr><td>evalOrder 拓撲列</td><td>子 eval 依序被呼叫</td><td>等價組合邏輯的「資料流」</td></tr>
+<tr><td>時序元件 special-case</td><td>tick/tock/latch</td><td>把「時脈驅動」的狀態機規則化</td></tr>
+<tr><td>slice 逐位別名</td><td>細粒度 Wire 引用</td><td>支援 <code>in[3]</code> 這種前面文化</td></tr>
+</table>
+<pre><span class="hint">lib/hdl/codegen.js — part 待判（摘錄）</span>
+<span class="cm">// part 是否為有狀態（clocked）：eval 輸出取自狀態、輸入在 tick 才取樣</span>
+isClocked(chip) → { cpuRoute: 'latch', nextEval: 'eval 取舊值' }</pre>
+<p class="src">▲ codegen 的兩世界差別就這麼一句：<strong>有狀態 vs 無狀態</strong>、決定生成 eval 的樣板。</p>
+<div class="warn">
+⚠ <code>Memory.tst</code>（鍵盤互動測資）需要人工按鍵，CLI 自動跳過；這是課程原測資的「互動驗收」設計，不是 bug。
+</div>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+<h2>7. .tst 測資與 run()</h2>
+<p><code>.tst</code> 是一種簡易腳本：set 輸入↦ tick/tock↦ output。工法上和硬體模擬激烈不同——它是<strong>把硬體當黑盒驅動</strong>，與 .cmp 逐行比對。</p>
+<pre><span class="hint">third_party/courses/03/a/Register.tst（摘錄）</span>
+set in -32123,
+set load 0,
+tick, output;    <span class="cm">// ↑ 從舊狀態讀 out</span>
+tock, output;    <span class="cm">// ↑ 遇 load=1 的 tick 之後，out 才改</span>
+set in 12345,
+set load 1,
+tick, output;  …</pre>
+<pre><span class="hint">lib/rt/tst.js — run() 的節奏（概念）</span>
+<span class="kw">for</span> (<span class="kw">const</span> step <span class="kw">of</span> script.steps) {
+  set_inputs(step.sets);
+  <span class="kw">if</span> (step.tick) model.tick();   <span class="cm">// 升 → latch</span>
+  <span class="kw">if</span> (step.tock) model.tock();   <span class="cm">// 降 → q=latch</span>
+  <span class="kw">if</span> (step.output) out(model, step.output);
+}</pre>
+<p class="src">▲ run() 是「驅動硬體」的 compiler：set/tick/tock/output 四種操作重覆展開成實際的 JS 呼叫。</p>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=../03/a/Register" target="_blank">../dist/hdl.html#case=../03/a/Register</a> 主面板會跑這支 .tst；只要改壞 .hdl 就會立即 fail（常見錯因是 off by one tick）。</div>
+</section>
+
+<!-- 8 -->
+<section id="s8">
+<h2>8. 硬體旅程 01→05</h2>
+<p>Nand2Tetris 章節是「疊一層撫一層」：下面表列出每層存的本質＋本系統裡建議的樣本（直接 URL）：</p>
+<table>
+<tr><th>章</th><th>在本系統裡的觀察重點</th><th>連結</th></tr>
+<tr><td>01 基本閘</td><td>全是 NAND 化組合（Mux/加算/slice 文化）</td><td><a href="../dist/hdl.html#case=../01/Mux8Way16" target="_blank">Mux8Way16</a></td></tr>
+<tr><td>02 加法器/ALU</td><td>ALU：控制訊號（x/y/x-位組合→為何化簡敏感）</td><td><a href="../dist/hdl.html#case=../02/ALU" target="_blank">ALU</a></td></tr>
+<tr><td>03/a 時序</td><td>Bit→Register：tick/tock 模型的最小單位</td><td><a href="../dist/hdl.html#case=../03/a/Register" target="_blank">Register</a></td></tr>
+<tr><td>03/b 記憶體</td><td>RAM512→RAM4K→RAM16K：位址解碼樹</td><td><a href="../dist/hdl.html#case=../03/b/RAM16K" target="_blank">RAM16K</a></td></tr>
+<tr><td>05 CPU</td><td>大電路（2,680 閘），整台 hackcpu 的心臟</td><td><a href="../dist/hdl.html#case=../05/CPU" target="_blank">CPU</a></td></tr>
+</table>
+<div class="box"><strong>穿越提示</strong>：EDA 書第 5 章用 CPU 完整走過合成前後的化簡差異（2680→2224）——那本書的每一格都同時就是硬體線的產品。</div>
+</section>
+
+<!-- 9 -->
+<section id="s9">
+<h2>9. 自研 CPU：Riscv32i</h2>
+<p><code>Riscv32i/rv32i.hdl</code> 是本目錄<strong>自研</strong>的單週期 RV32I CPU（word 定址；資料通路五段一次做完的單週期設計）。它 就是第 8 章=cycle 技術的成果展示：</p>
+<pre><span class="hint">Riscv32i/rv32i.hdl — 資料通路摘錄</span>
+<span class="cm">//   IF：PC（R32）→ ROM32 取指；pcSeq＝pc＋1；pcTgt＝pc＋imm。</span>
+<span class="cm">//   ID：RvDec 解碼（rd/rs1/rs2/imm/ctl）；RF32 讀 r1/r2（a3＝dbgRd 供除錯）。</span>
+<span class="cm">//   EX：A 選（r1/imm/pc）× B 選（r2/imm）→ RvAlu；RvBr 判分支；</span>
+<span class="cm">//       JALR 目標＝r1＋imm（word 定址不斷 LSB）。</span>
+<span class="cm">//   MEM：RAM32W（SW 寫 r2；位址取 aluY[14:0]）。</span>
+<span class="cm">//   WB：aluY / memOut / pcSeq（JAL/JALR link）三選一。</span>
+CHIP rv32i {
+    IN  dbgRd[5];
+    OUT pc[32], dbgReg[32];
+    PARTS:
+    <span class="cm">// IF</span>
+    R32(in=pcNext, load=pcLoad, out=pc);
+    ROM32(address=pc[0..14], out=instr);
+    Add32c(a=pc, b=one, cin=false, out=pcSeq);
+    <span class="cm">// ID / EX / MEM / WB …（完整實作在 rv32i.hdl）</span>
+}</pre>
+<p class="src">▲ 一週期一指令：五段都貼在同一 eval 一次做完；附帶 dbgRd/dbgReg 除錯面板（dbgRd/dbgReg 探針）讓 rv32i.tst 能按位讀狀態。</p>
+<table>
+<tr><th>支援指令</th><th>範圍</th></tr>
+<tr><td>R 型</td><td>add/sub/sll/slt/sltu/xor/srl/sra/or/and（10 種全）</td></tr>
+<tr><td>I 型</td><td>addi/slli/srli/srai/slti/sltiu/xori/ori/andi</td></tr>
+<tr><td>載存</td><td>LW / SW（word 定址）</td></tr>
+<tr><td>跳轉</td><td>LUI / AUIPC / JAL / JALR</td></tr>
+<tr><td>分支</td><td>beq / bne / blt / bge / bltu / bgeu</td></tr>
+<tr><td>停機</td><td>HALT（opcode 1111111：黏住 halted、凍結 pc）</td></tr>
+</table>
+</section>
+
+<!-- 10 -->
+<section id="s10">
+<h2>10. RV32I 測資與觀察</h2>
+<p>我們用「60 指令綜合測資（<code>rv32i.tst</code>＋<code>.cmp</code>）」驗整顆 CPU：它們由 <code>Riscv32i/*.asm</code> 經 <code>third_party/courses/Riscv32/asm.js</code> 組譯成 <code>.hack</code>，直接 <code>ROM32 load</code>。</p>
+<pre><span class="hint">本章範例（一種是在本目錄 cli 即可跑）</span>
+<span class="cm"># 60 指令綜合測資（走全套）</span>
+node cli/hdl2js.js --dir third_party/courses/01 --dir third_party/courses/02 \
+  --dir third_party/courses/03/a --dir third_party/courses/03/b \
+  --dir third_party/courses/05 --dir Riscv32i --test Riscv32i/rv32i.tst
+
+<span class="cm"># 小示範：1+2+3+…+10 存 mem[16]</span>
+node cli/hdl2js.js --dir third_party/courses/01 --dir third_party/courses/02 \
+  --dir third_party/courses/03/a --dir third_party/courses/03/b \
+  --dir Riscv32i --test Riscv32i/sum10.tst</pre>
+<div class="demo">
+💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=Riscv32i/sum10" target="_blank">hdl.html#case=Riscv32i/sum10</a> →（語料章節「06 RV32I 處理器」）。
+右上探針可讀 pc／dbgReg，逐 tick/tock 就能一步一步看 pc 前進。
+</div>
+<div class="warn">⚠ rv32i 的記憶體是<strong>word 定址</strong>（RV 標準是 byte 定址）——jump 目標照 word 定址直接丟棄 LSB——與 RV32S 的簡化一致，是刻意取捨。</div>
+</section>
+
+<!-- 11 -->
+<section id="s11">
+<h2>11. 小測驗</h2>
+<div class="quiz" data-q="1">
+<b>Q1</b>. HDL 為什麼「不按行順序」也能對出正確的 eval 順序？<br>
+<label><input type="radio" name="q1" value="a">A. evalOrder 由子輸入輸出資料依賴（拓撲排序）決定</label>
+<label><input type="radio" name="q1" value="b">B. JS 引擎有魔法</label>
+<label><input type="radio" name="q1" value="c">C. 隨機順序，反正多跑幾次</label>
+<div class="exp" data-exp="1">✔ A。elab 按「先有輸入才可算輸出」排 evalOrder；抄寫順序無意義。</div>
+</div>
+<div class="quiz" data-q="2">
+<b>Q2</b>. DFF 的 tock() 在生成的 JS 裡做什麼？<br>
+<label><input type="radio" name="q2" value="a">A. 重新 comp算所有輸入</label>
+<label><input type="radio" name="q2" value="b">B. q = latch；把 tick 收的樣本公佈為新狀態</label>
+<label><input type="radio" name="q2" value="c">C. 什麼都不做，等下一次 eval</label>
+<div class="exp" data-exp="2">✔ B。<code>{latch, q}</code> 是時序元件的兩段式；tick 收樣本、tock 公佈。</div>
+</div>
+<div class="quiz" data-q="3">
+<b>Q3</b>. .tst 檔的迴圈結構裡，多數理論架構中「tick」實際觸發的是？<br>
+<label><input type="radio" name="q3" value="a">A. eval() 重算所有 children</label>
+<label><input type="radio" name="q3" value="b">B. 時序元件的 latch（時脈上升）</label>
+<label><input type="radio" name="q3" value="c">C. 結束這個程式</label>
+<div class="exp" data-exp="3">✔ B。tick 是時脈上升：時序元件把輸入 latch 進去；tock 下降，才公佈 q。</div>
+</div>
+<div class="quiz" data-q="4">
+<b>Q4</b>. rv32i 的 word 定址簡化，放棄了哪些「真 RV32」的行為？<br>
+<label><input type="radio" name="q4" value="a">A. byte/halfword 記憶體與未對齊位址行為</label>
+<label><input type="radio" name="q4" value="b">B. 分支指令</label>
+<label><input type="radio" name="q4" value="c">C. R 型所有指令</label>
+<div class="exp" data-exp="4">✔ A。word 定址省了 LB/LH/LBU/LHU/SB/SH 與未對齊；word 定址 jump 目標不斷 LSB（同 RV32S 的簡化）。</div>
+</div>
+<div style="margin:12px 0">
+  <button class="btn" onclick="checkQuiz(this)">✔ 對答案</button>
+  <span id="quizScore" style="color:#8fd0ff"></span>
+</div>
+</section>
+
+<!-- 12 -->
+<section id="s12">
+<h2>12. 名詞表</h2>
+<dl class="gloss">
+<dt>HDL</dt><dd>描述接線圖的文字（本系統吃 Nand2Tetris 課程版）；不是程式。</dd>
+<dt>elab</dt><dd>把「一堆 .hdl」整理為晶片庫＋實例樹；elab 之後才有 evalOrder。</dd>
+<dt>codegen</dt><dd>把晶片生為 JS 類別；hdl2js 主要工作。</dd>
+<dt>tick / tock</dt><dd>時脈上升／下降兩段；時序元件的 latch 與 q 公佈時機。</dd>
+<dt>.tst / .cmp</dt><dd>測資腳本與黃金答案；run() 驅動硬體後逐行比對。</dd>
+<dt>slice</dt><dd><code>in[3..7]</code> 型的位元段；以 per-bit Wire 結合。</dd>
+<dt>dbgRd / dbgReg</dt><dd>rv32i 的除錯探針：選讀其任一暫存器（不用硬體新品管中人工真值）。</dd>
+<dt>word 定址</dt><dd>本目錄 CPU 的記憶體簡化；「1 地址 = 1 word」。</dd>
+</dl>
+<div class="box" style="margin-top:24px">
+📚 本書原始碼與實作分散在：<code>lib/hdl/</code>（第 3–6 章）、<code>lib/rt/tst.js</code>（第 7 章）、
+<code>cli/hdl2js.js</code>、<code>Riscv32i/</code>（第 9–10 章）。改動請先跑
+<code>node --test test/test.js</code>（課程語料回歸）與上述兩條 CLI 命令確認綠燈。
+</div>
+</section>
+
+</article>
+</main>
+<script>
+  function checkQuiz(btn) {
+    let ok = 0, total = 0;
+    const answers = { q1: 'a', q2: 'b', q3: 'b', q4: 'a' };
+    for (const q of Object.keys(answers)) {
+      total++;
+      const sel = document.querySelector('input[name=' + q + ']:checked');
+      const exp = document.querySelector('.exp[data-exp="' + q.slice(1) + '"]');
+      if (exp) exp.style.display = 'block';
+      if (sel && sel.value === answers[q]) ok++;
+    }
+    document.getElementById('quizScore').textContent = ok + ' / ' + total + ' 正確';
+  }
+</script>
+</body>
+</html>

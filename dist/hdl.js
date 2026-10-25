@@ -566,6 +566,7 @@
       selBody: document.getElementById('synSelBody'),
       luts: document.getElementById('synLuts'),
       err: document.getElementById('fpgaErr'),
+      toast: document.getElementById('synToast'),
       replay: document.getElementById('synReplay'),
       finalBtn: document.getElementById('synFinal'),
       reportBtn: document.getElementById('synReport'),
@@ -914,7 +915,8 @@
           gPos.set(g, { x: 64 + lv * colW + (colW - box) / 2, y: 54 + i * rowH, lv });
         });
       }
-      // 連線：driver 右緣 → consumer 左緣（預設開；單元數多時略去避免毛球）
+      // 連線：driver 右緣 → consumer 左緣（預設開；單元數多時略去避免毛球＋彈出視窗說明）
+      if (absWires && items.length > 160) toastWiresSkipped(items.length);
       if (absWires && items.length <= 160) {
         ctx.strokeStyle = '#5a6d85'; ctx.lineWidth = 1;
         for (const g of items) {
@@ -1441,10 +1443,29 @@
     let reportMode = false;
     // 抽象階段連線顯示開關（預設開；大圖自動省略以避免毛球）
     let absWires = true;
+    // 抽象連線省略的視窗提示（同一圖只在第一次畫時彈一次；3.5 秒自動關閉）
+    let toastKey = '';
+    function toastWiresSkipped(n) {
+      const key = S.top + ':' + stageIdx() + ':' + n;
+      if (key === toastKey) return;
+      toastKey = key;
+      sEl.toast.innerHTML = `<b>連線略過</b>：本階段有 ${n} 個單元（上限 160），畫出全部連線會糊成毛球。` +
+        `已自動省略連線，只顯示 level 分欄方塊；更細的接線可用「檢視電路圖」逐層點入子晶片查看。`;
+      sEl.toast.style.display = 'block';
+      clearTimeout(toastWiresSkipped.t);
+      toastWiresSkipped.t = setTimeout(() => { sEl.toast.style.display = 'none'; }, 3500);
+    }
     sEl.wiresBtn.onclick = () => {
       absWires = !absWires;
       sEl.wiresBtn.textContent = absWires ? '⌁ 連線：開' : '⌁ 連線：關';
       if (S) draw();
+      if (absWires && S) {
+        // 按鈕聽到「開」但此圖超過上限時，同樣提醒為何還是沒線
+        const idx = stageIdx();
+        const items = (asicMode ? (idx <= 2 ? (S.stages?.opt || S.stages?.flat)?.gates : S.asic.netlist.cells)
+                                : (idx <= 2 ? (S.stages?.opt || S.stages?.flat)?.gates : [])) || [];
+        if (items.length > 160) toastWiresSkipped(items.length);
+      }
     };
     sEl.reportBtn.onclick = () => {
       reportMode = !reportMode;

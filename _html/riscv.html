@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<!-- 
+  _html/riscv.html — RISC-V 互動電子書（第 4 本：貫穿全案）
+  範圍：Jack→VM→RISC-V（vm2riscv→rvemu），以及硬體這頭的 Riscv32i HDL CPU（rv32i.hdl→hdl2js→.tst），
+        最後接到 EDA 合成（MicroSyn LUT4+DFF）。
+  範例連結：../dist/jack.html、../dist/rvemu.html、../dist/hdl.html；程式碼片段取自 lib/ 原始碼。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RISC-V 互動電子書 — 從 Jack 到電路的完整一圈</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'PingFang TC', 'Microsoft JhengHei', ui-monospace, monospace;
+         background: #12161c; color: #dce1e8; line-height: 1.75; }
+  a { color: #7ec3ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { position: sticky; top: 0; z-index: 5; background: #1a2028; border-bottom: 1px solid #3a4a5e;
+           padding: 10px 18px; display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sub { font-size: 12px; color: #9fb2c8; }
+  main { display: grid; grid-template-columns: 220px 1fr; gap: 0; min-height: calc(100vh - 46px); }
+  nav { border-right: 1px solid #2a3441; background: #171c23; padding: 14px 10px; font-size: 13px;
+        position: sticky; top: 46px; height: calc(100vh - 46px); overflow: auto; }
+  nav a { display: block; padding: 4px 8px; border-radius: 5px; color: #9fb2c8; }
+  nav a:hover { background: #232b36; color: #e6ecf4; text-decoration: none; }
+  nav .gap { height: 10px; }
+  article { max-width: 860px; padding: 26px 34px 120px; }
+  section { margin-bottom: 56px; scroll-margin-top: 60px; }
+  h2 { font-size: 20px; border-bottom: 1px solid #33405a; padding-bottom: 6px; }
+  h3 { font-size: 15px; color: #8fd0ff; }
+  code { background: #232b36; border: 1px solid #333f52; border-radius: 4px; padding: 1px 5px;
+         font-size: 13px; color: #d8e4f2; }
+  pre { background: #141a21; border: 1px solid #2f3b4d; border-radius: 8px; padding: 12px 14px;
+        overflow: auto; font-size: 12.5px; line-height: 1.55; position: relative; }
+  pre .cm { color: #6f8fae; }
+  pre .kw { color: #7ec3ff; }
+  pre .st { color: #a8d8a8; }
+  pre .hint { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #5b6e85; }
+  .src { font-size: 11.5px; color: #78909f; margin-top: -6px; margin-bottom: 16px; }
+  .box { border: 1px solid #3a556e; border-left: 4px solid #3d6ea0; background: #1a2230;
+         border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 13.5px; }
+  .warn { border-color: #6e5a3a; border-left-color: #c9973d; background: #241f16; }
+  .demo { border: 1px solid #2f5a3a; border-left: 4px solid #3d8a5a; background: #16211a;
+          border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .btn { display: inline-block; padding: 5px 14px; border-radius: 6px; background: #2a3441;
+         border: 1px solid #435269; color: #dce1e8; cursor: pointer; font-size: 13px; }
+  .btn:hover { background: #35435a; text-decoration: none; }
+  table { border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+  th, td { border: 1px solid #33405a; padding: 4px 10px; text-align: left; }
+  th { background: #1d2530; color: #9fc3e8; }
+  .quiz { border: 1px solid #33405a; border-radius: 8px; padding: 12px 16px; margin: 12px 0; background: #171d25; }
+  .quiz label { display: block; padding: 3px; cursor: pointer; }
+  .quiz .exp { display: none; margin-top: 8px; font-size: 12.5px; color: #9fc3e8; border-top: 1px dashed #33405a; padding-top: 6px; }
+  .gloss dt { font-weight: 600; color: #8fd0ff; margin-top: 8px; }
+  .gloss dd { margin: 0 0 4px 0; font-size: 13px; color: #b8c4d4; }
+  .flow { font-size: 12.5px; background: #141a21; border: 1px solid #2f3b4d; border-radius: 8px;
+          padding: 10px 14px; overflow-x: auto; white-space: pre; color: #aee1ff; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } nav { display: none; } article { padding: 18px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🦉 RISC-V 互動電子書</h1>
+  <span class="sub">貫穿全案：Jack→VM→RISC-V（軟體）→ Riscv32i HDL CPU（硬體）→ EDA 合成 · 範例直連 ../dist/</span>
+</header>
+<main>
+<nav id="toc">
+  <a href="#s1">1. RISC-V 的兩個身分</a>
+  <a href="#s2">2. 完整一圈路線圖</a>
+  <a href="#s3">3. vm2riscv：VM→RV32 後端</a>
+  <a href="#s4">4. 記憶體約定與內聯</a>
+  <a href="#s5">5. rvtools：rvasm＋rvemu</a>
+  <a href="#s6">6. Riscv32i：用 HDL 造 CPU</a>
+  <a href="#s7">7. 指令集與 word 定址</a>
+  <a href="#s8">8. .tst 驅動硬體 CPU</a>
+  <a href="#s9">9. 從 .asm 到 .hack</a>
+  <a href="#s10">10. 接上 EDA：合成數據</a>
+  <a href="#s11">11. 小測驗</a>
+  <a href="#s12">12. 名詞表</a>
+  <div class="gap"></div>
+  <a href="./">← 回 _html/</a>
+</nav>
+<article>
+
+<!-- 1 -->
+<section id="s1">
+<h2>1. RISC-V 的兩個身分</h2>
+<p>本專案裡 RISC-V 出現<strong>兩次</strong>，角色完全不同：</p>
+<ul>
+<li><strong>軟體這頭（編譯目標）</strong>：Jack 程式經 <code>jack2vm</code> 變 VM 碼後，<code>vm2riscv</code> 把它翻成 RV32 組語，跑在 <code>rvemu</code> 模擬器上——這是「程式跑在哪」的問題。</li>
+<li><strong>硬體這頭（被造物）</strong>：<code>Riscv32i/rv32i.hdl</code> 是本目錄自研的單週期 RV32I 處理器，用 Nand2Tetris 的 HDL 疊出來、被 <code>hdl2js</code> 編譯模擬——這是「CPU 本身怎麼造」的問題。</li>
+</ul>
+<div class="box">
+同一個指令集架構（ISA），一邊當<strong>編譯後端</strong>、一邊當<strong>硬體藍圖</strong>。這正是真實半導體世界的分工：ISA 是合約，編譯器與處理器各自履約。
+</div>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+<h2>2. 完整一圈路線圖</h2>
+<div class="flow">軟體路（程式的旅程）：
+  .jack ──jack2vm──▶ .vm ──vm2riscv──▶ .s ──rvasm──▶ 機器碼 ──rvemu──▶ UART／螢幕鏡像
+
+硬體路（CPU 的旅程）：
+  Riscv32i/*.hdl ──hdl2js──▶ JS 電路 ──.tst tick/tock──▶ rv32i.cmp 比對
+
+合流點（EDA）：
+  *.hdl ──MicroSyn──▶ NAND 網表 ──▶ LUT4+DFF ──MicroPnR──▶ 佈局＋繞線＋STA
+
+第三塊（Hack 原生路）：
+  .jack ──▶ .vm ──▶ .asm ──▶ .hack ──▶ hackemu（ch05 CPU 硬體跑 Hack 機器碼）</div>
+<p>本書沿「軟體→硬體→EDA」的順序走一圈，把四本書的知識串起來。</p>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+<h2>3. vm2riscv：VM→RV32 後端</h2>
+<p><code>lib/riscv/vm2riscv.js</code> 把 VM 碼翻成 RV32 組語（目標＝<code>third_party/rvtools</code> 的 rvasm 子集：真指令＋<code>li/mv/j/jr/ret/call</code>）。兩個關鍵設計：</p>
+<ul>
+<li><strong>只用數字版 <code>li</code></strong>：位址全可控、小常數只佔 1 格；符號版佔位不一致的坑已在上游修掉，但後端刻意不用。</li>
+<li><strong>return 地址走 ra 壓幀</strong>：callee 序幕 <code>sw ra, -20(s2)</code> 回填，返回 <code>jalr x0, 0(t1)</code>。</li>
+</ul>
+<pre><span class="hint">cli 三步（輸出在前）</span>
+node cli/vm2riscv.js out.s in1.vm in2.vm  <span class="cm"># 多檔才寫 bootstrap（OS 在前）</span>
+node cli/riscv_run.js out.s --max 200000  <span class="cm"># 組譯＋定步跑，印 ra/s1/a0＋STATIC＋UART</span></pre>
+<div class="warn">
+<strong>strict vs lenient</strong>：未定義 OS 呼叫在嚴格模式 throw（可組譯的產物才保證正確）；
+<code>translate(files, { lenient: true })</code> 是顯示模式（照發 <code>jal</code> 並列外部表頭，僅供檢視）。
+結尾會檢查每個 <code>call</code> 都有對應 <code>function</code>。
+</div>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+<h2>4. 記憶體約定與內聯</h2>
+<p>VM 的抽象段（SP/LCL/ARG/THIS/THAT/heap/static）在 RV32 的 byte 位址世界裡有固定落點：</p>
+<table>
+<tr><th>VM 資源</th><th>RV32 位址</th><th>備註</th></tr>
+<tr><td>SP（s1）</td><td>0x1C000 起向上</td><td>暫存器 s1 全程持有</td></tr>
+<tr><td>LCL/ARG/THIS/THAT</td><td>s2..s5</td><td>幀指標四兄弟</td></tr>
+<tr><td>temp</td><td>0x10000＋4i</td><td>VM temp 0..7</td></tr>
+<tr><td>static</td><td>0x11000＋檔序*0x400＋4i</td><td>≤32 檔、每檔 ≤256 個</td></tr>
+<tr><td>heap／SCREEN／KBD</td><td>0x20000＋4W／…／0x38000</td><td>Jack word 位址 W 經 this/that 映射</td></tr>
+</table>
+<p><strong>內聯</strong>是效能關鍵：</p>
+<ul>
+<li><code>Math.multiply/divide</code> → 硬指令 <code>mul/div</code>（RV32M）。</li>
+<li><code>Output.printChar/printInt/println/printString</code> → UART <code>ecall a7=1</code>（void 照推 0）。</li>
+<li><code>Keyboard.readChar/readInt</code> 不內聯：rvemu 無鍵盤會空等；非阻塞的 <code>keyPressed</code> 可用（<code>rvemu.html</code> 按鍵注入 KBD 鏡像）。</li>
+</ul>
+<div class="box">真值約定：true＝-1（Hack 文化）；整數走 32-bit 語意（Hack 原生 16-bit，小數值範圍內一致）。</div>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+<h2>5. rvtools：rvasm＋rvemu</h2>
+<p><code>third_party/rvtools</code>（上游 <code>riscv/_web_tools</code>）提供四件套：<code>isa.js</code>（編碼表）、<code>rvasm.js</code>（組譯器）、<code>rvdis.js</code>（反組譯）、<code>rvemu.js</code>（模擬器）。<code>tools/embed.js</code> 把它們包成 <code>RvToolchain</code> IIFE（<code>window.HackRv</code>）給網頁用。</p>
+<div class="demo">💡 <strong>動手玩</strong>：<a href="../dist/rvemu.html#prog=Pong&run=1" target="_blank">rvemu.html#prog=Pong&run=1</a> →
+三欄介面（編輯／機器碼／螢幕）；可單步（PC 高亮）、重設、速度滑桿 0..100 對應約 316..10 萬步/幀；上限填 0＝無限跑（遊戲永不 halt）。</div>
+<div class="demo">💡 <strong>jack.html 的 RV 後端</strong>：<a href="../dist/jack.html#prog=Seven&backend=riscv" target="_blank">jack.html#prog=Seven&backend=riscv</a> →
+RISCV 分頁看模組的 lenient 預覽；「▶執行」＝嚴格翻譯→rvasm 組譯→rvemu 跑滿 200 萬步（Pong 光初始化就要約 100 萬步）。</div>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+<h2>6. Riscv32i：用 HDL 造 CPU</h2>
+<p>現在換帽子：不編譯程式了，<strong>造 CPU 本身</strong>。<code>Riscv32i/rv32i.hdl</code> 是單週期 RV32I（word 定址），資料通路五段在一次 eval 內做完：</p>
+<pre><span class="hint">Riscv32i/rv32i.hdl — 摘錄（完整檔見語料章節「06 RV32I 處理器」）</span>
+CHIP rv32i {
+    IN  dbgRd[5];                <span class="cm">// 除錯探針：選讀任一暫存器</span>
+    OUT pc[32], dbgReg[32];
+    PARTS:
+    <span class="cm">// IF：PC → ROM32 取指</span>
+    R32(in=pcNext, load=pcLoad, out=pc);
+    ROM32(address=pc[0..14], out=instr);
+    Add32c(a=pc, b=one,  cin=false, out=pcSeq);
+    Add32c(a=pc, b=imm,  cin=false, out=pcTgt);
+    <span class="cm">// ID / EX / MEM / WB：RvDec → RF32 → RvAlu/RvBr → RAM32W → 寫回</span>
+}</pre>
+<p class="src">▲ 一週期一條指令；HALT（opcode 1111111）黏住 halted 凍結 PC。</p>
+<p>子晶片分兩層：</p>
+<table>
+<tr><th>層</th><th>晶片</th></tr>
+<tr><td>32-bit 積木（本目錄自有）</td><td>Add32c／And32／Or32／Xor32／Not32／Mux32／Mux4Way32／Cmp32／Eq32／Se12／Se20／SImm／Ui32／Zero32i</td></tr>
+<tr><td>處理器器官（源自 Riscv32/_lib 拷貝）</td><td>R32（PC）／RvDec（解碼＋ctl[15:0]）／RvAlu（11 種運算）／RvSh32（桶式移位）／RvBr（六種分支）／RF32／RAM32W／ROM32（內建）</td></tr>
+<tr><td>閘級基礎</td><td>複用課程 <code>../01、../02</code>（Nand 一直往下到底）</td></tr>
+</table>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=Riscv32i/rv32i" target="_blank">hdl.html#case=Riscv32i/rv32i</a> →
+hdl.html 語料選單切到「06 RV32I 處理器」；逐層點開電路圖看 rv32i 怎麼由子晶片組成。</div>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+<h2>7. 指令集與 word 定址</h2>
+<p>支援範圍（與 <code>Riscv32/RV32S</code> 相容的簡化）：</p>
+<table>
+<tr><th>類</th><th>指令</th></tr>
+<tr><td>R 型（10 種全）</td><td>add／sub／sll／slt／sltu／xor／srl／sra／or／and</td></tr>
+<tr><td>I 型</td><td>addi／slli／srli／srai／slti／sltiu／xori／ori／andi</td></tr>
+<tr><td>載存</td><td>LW／SW（word 定址）</td></tr>
+<tr><td>跳轉</td><td>LUI／AUIPC／JAL／JALR</td></tr>
+<tr><td>分支</td><td>beq／bne／blt／bge／bltu／bgeu</td></tr>
+<tr><td>停機</td><td>HALT（opcode 1111111）</td></tr>
+</table>
+<div class="box"><strong>word 定址的代價與收穫</strong>：省掉 LB/LH/LBU/LHU/SB/SH 與 FENCE/ECALL；jump 目標不斷 LSB（byte 版 RV 回跳恆偶數、清 LSB 無害，word 版奇數 PC 合法——JALR 若照抄 <code>& ~1</code> 會跳錯一格，這是 rv32i.hdl.md 記下的除錯血淚）。</div>
+</section>
+
+<!-- 8 -->
+<section id="s8">
+<h2>8. .tst 驅動硬體 CPU</h2>
+<p>硬體 CPU 的驗證走 .tst 腳本：載入 rv32i.hdl、<code>ROM32 load</code> 程式、tick/tock 逐週期推進、經 <code>dbgRd</code> 探針與 <code>RAM32W[i]</code> 讀狀態，與 .cmp 逐行比對。</p>
+<pre><span class="hint">Riscv32i/sum10.tst — 摘錄</span>
+load rv32i.hdl,
+output-list pc%X1.8.1 dbgReg%D1.10.1 RAM32W[16]%D1.10.1 time%S0.6.1;
+ROM32 load sum10.hack,
+set dbgRd 1,
+repeat 45 { tick, tock, output; }   <span class="cm">// 45 週期跑完 1+2+…+10</span></pre>
+<p class="src">▲ sum10：sum=55 存 mem[16] 再讀回；HALT 後 PC 凍結在 9。期望值 x1=55、x2=11、x3=10（見 sum10.asm 註解）。</p>
+<pre><span class="hint">CLI 全套（60 指令綜合測資）</span>
+node cli/hdl2js.js --dir third_party/courses/01 --dir third_party/courses/02 \
+  --dir third_party/courses/03/a --dir third_party/courses/03/b \
+  --dir third_party/courses/05 --dir Riscv32i --test Riscv32i/rv32i.tst</pre>
+<p class="src">▲ rv32i.tst：60 指令跑完 32 個暫存器全中（rv32i_prog.asm 註解列期望值）。</p>
+</section>
+
+<!-- 9 -->
+<section id="s9">
+<h2>9. 從 .asm 到 .hack</h2>
+<p>硬體 CPU 的測資程式由 <code>Riscv32i/*.asm</code> 經 <code>third_party/courses/Riscv32/asm.js</code> 組譯成 <code>.hack</code>（供 <code>ROM32 load</code>，CLI 與 web 共用格式）：</p>
+<pre><span class="hint">Riscv32i/sum10.asm — 開頭</span>
+        addi x1, x0, 0            <span class="cm"># 0  sum=0</span>
+        addi x2, x0, 1            <span class="cm"># 1  i=1</span>
+        addi x3, x0, 10           <span class="cm"># 2  n=10</span>
+loop:   add  x1, x1, x2           <span class="cm"># 4  sum+=i</span>
+        addi x2, x2, 1            <span class="cm"># 5  i++</span>
+        blt  x2, x4, loop         <span class="cm"># 6  i<11 則續跑</span></pre>
+<p class="src">▲ 同一份 .asm 精神也餵軟體路（vm2riscv 產物走 rvasm）；兩邊組譯器各自獨立但 ISA 一致。</p>
+</section>
+
+<!-- 10 -->
+<section id="s10">
+<h2>10. 接上 EDA：合成數據</h2>
+<p>最後一站：把 HDL 電路交給本專案的迷你 EDA（<code>lib/fpga/synthesis.js</code> 的 MicroSyn：NAND/DFF 展平 → 化簡 → LUT4 techmap；MicroPnR：退火佈局＋繞線＋STA）。實測數據（node 直跑 <code>synthesize()</code>）：</p>
+<table>
+<tr><th>頂層</th><th>rawGates（化簡後）</th><th>LUT4</th><th>DFF</th></tr>
+<tr><td>RvAlu（11 種運算）</td><td>5,254</td><td>885</td><td>0</td></tr>
+<tr><td>RvSh32（桶式移位）</td><td>1,858</td><td>331</td><td>0</td></tr>
+<tr><td>RvBr（六種分支）</td><td>1,958</td><td>223</td><td>0</td></tr>
+<tr><td>RvDec（解碼器）</td><td>1,930</td><td>204</td><td>0</td></tr>
+<tr><td>CPU（ch05 Hack）</td><td>2,224</td><td>344</td><td>48</td></tr>
+</table>
+<div class="warn">
+<strong>rv32i 本體為何不在表上？</strong>它引用黑盒記憶體（RF32／ROM32／RAM32W 內建原語），
+MicroSyn 展平到閘級時會拒絕黑盒（「暫不支援內建黑盒子記憶體」）。
+要合成 rv32i，得先把這三顆也用 HDL 展開——這正是 project 05 的 CPU 為何能進表：它的 ROM32K/RAM16K 在測資層代換，展平時只剩純閘。
+</div>
+<div class="demo">💡 <strong>動手看</strong>：<a href="../dist/hdl.html#case=Riscv32i/RvAlu" target="_blank">hdl.html#case=Riscv32i/RvAlu</a> →
+按「合成 LUT」看 RvAlu 的 ①展平 ②化簡 ③FPGA 映射 退火佈局到 STA 全流程。</div>
+<div class="box">四書合流：軟體書（Jack→VM→asm）產生程式；硬體書（HDL→tick/tock）造出跑程式的機器；EDA 書（gate→LUT→佈局）把機器變成晶片；本書把它們接成一圈。</div>
+</section>
+
+<!-- 11 -->
+<section id="s11">
+<h2>11. 小測驗</h2>
+<div class="quiz" data-q="1">
+<b>Q1</b>. vm2riscv 為什麼只用數字版 <code>li</code>？<br>
+<label><input type="radio" name="q1" value="a">A. 位址全可控、小常數只佔 1 格</label>
+<label><input type="radio" name="q1" value="b">B. rvasm 不支援符號</label>
+<label><input type="radio" name="q1" value="c">C. RV32 標準規定</label>
+<div class="exp" data-exp="1">✔ A。符號版 li 的佔位不一致雖已修（固定 lui+addi 2 格），後端仍刻意用數字版求位址確定與省格。</div>
+</div>
+<div class="quiz" data-q="2">
+<b>Q2</b>. Jack 的 heap 寫入在 RV 路徑落到哪？<br>
+<label><input type="radio" name="q2" value="a">A. 0x20000＋4W（word 位址 W 映射）</label>
+<label><input type="radio" name="q2" value="b">B. 0x1C000</label>
+<label><input type="radio" name="q2" value="c">C. 0x11000</label>
+<div class="exp" data-exp="2">✔ A。0x1C000 是 SP 起點、0x11000 是 static；heap／SCREEN／KBD 的 Jack word 位址 W 映射到 0x20000＋4W。</div>
+</div>
+<div class="quiz" data-q="3">
+<b>Q3</b>. rv32i 的 JALR 為何「不斷 LSB」？<br>
+<label><input type="radio" name="q3" value="a">A. 省一個 AND 閘</label>
+<label><input type="radio" name="q3" value="b">B. word 定址下奇數 PC 合法；byte 版的 & ~1 慣例照抄會跳錯格</label>
+<label><input type="radio" name="q3" value="c">C. RV 標準要求</label>
+<div class="exp" data-exp="3">✔ B。byte 定址指令恆 4-byte 對齊故回跳恆偶；word 定址 1 word＝1 指令，link＝35 這種奇數是合法目標。</div>
+</div>
+<div class="quiz" data-q="4">
+<b>Q4</b>. sum10.tst 用什麼觀察執行結果？<br>
+<label><input type="radio" name="q4" value="a">A. UART</label>
+<label><input type="radio" name="q4" value="b">B. dbgRd/dbgReg 探針＋RAM32W[16] 探測</label>
+<label><input type="radio" name="q4" value="c">C. 螢幕鏡像</label>
+<div class="exp" data-exp="4">✔ B。硬體 CPU 的除錯介面：dbgRd[5] 選暫存器、RAM32W[i] 探記憶體；輸出走 .cmp 比對。</div>
+</div>
+<div class="quiz" data-q="5">
+<b>Q5</b>. 為什麼 EDA 合成表上沒有 rv32i 本體？<br>
+<label><input type="radio" name="q5" value="a">A. 它太大合不動</label>
+<label><input type="radio" name="q5" value="b">B. 它引用 RF32/ROM32/RAM32W 黑盒記憶體，展平器拒絕黑盒</label>
+<label><input type="radio" name="q5" value="c">C. RISC-V 不能合成</label>
+<div class="exp" data-exp="5">✔ B。子晶片（RvAlu 等）都是純閘所以能合成；把記憶體黑盒也用 HDL 展開後 rv32i 才能整顆下場。</div>
+</div>
+<div style="margin:12px 0">
+  <button class="btn" onclick="checkQuiz(this)">✔ 對答案</button>
+  <span id="quizScore" style="color:#8fd0ff"></span>
+</div>
+</section>
+
+<!-- 12 -->
+<section id="s12">
+<h2>12. 名詞表</h2>
+<dl class="gloss">
+<dt>ISA</dt><dd>指令集架構：軟硬之間的合約；本書主角 RV32I 在本專案同時當編譯目標與硬體藍圖。</dd>
+<dt>vm2riscv</dt><dd>VM→RV32 後端（lib/riscv/vm2riscv.js）；只用 rvasm 子集，strict/lenient 兩模式。</dd>
+<dt>rvtools</dt><dd>third_party/rvtools 四件套：isa/rvasm/rvdis/rvemu；embed 後為 window.HackRv。</dd>
+<dt>word 定址</dt><dd>rv32i 的記憶體簡化：1 位址＝1 word（32-bit）；放棄 byte/half 存取。</dd>
+<dt>HALT</dt><dd>opcode 1111111：黏住 halted、凍結 PC；rv32i 的停機約定。</dd>
+<dt>dbgRd / dbgReg</dt><dd>rv32i 除錯探針：5-bit 選讀 32 個暫存器之一。</dd>
+<dt>RvDec / RvAlu / RvSh32 / RvBr</dt><dd>處理器四器官：解碼／11 種運算／桶式移位／六種分支。</dd>
+<dt>黑盒記憶體</dt><dd>RF32/ROM32/RAM32W 等內建原語；MicroSyn 不展平黑盒，故 rv32i 本體暫不可合成。</dd>
+<dt>ecall a7=1</dt><dd>RV 路徑的 UART 輸出約定；Output.print* 內聯後的物理出口。</dd>
+</dl>
+<div class="box" style="margin-top:24px">
+📚 本書原始碼與實作分散在：<code>lib/riscv/</code>（第 3–4 章）、<code>third_party/rvtools/</code>（第 5 章）、
+<code>Riscv32i/</code>（第 6–9 章）、<code>lib/fpga/</code>（第 10 章）。
+改動後請跑 <code>node --test test/test_vm2riscv.js</code>（軟體路）與
+<code>node cli/hdl2js.js --dir … --dir Riscv32i --test Riscv32i/rv32i.tst</code>（硬體路）確認綠燈。
+</div>
+</section>
+
+</article>
+</main>
+<script>
+  function checkQuiz(btn) {
+    let ok = 0, total = 0;
+    const answers = { q1: 'a', q2: 'a', q3: 'b', q4: 'b', q5: 'b' };
+    for (const q of Object.keys(answers)) {
+      total++;
+      const sel = document.querySelector('input[name=' + q + ']:checked');
+      const exp = document.querySelector('.exp[data-exp="' + q.slice(1) + '"]');
+      if (exp) exp.style.display = 'block';
+      if (sel && sel.value === answers[q]) ok++;
+    }
+    document.getElementById('quizScore').textContent = ok + ' / ' + total + ' 正確';
+  }
+</script>
+</body>
+</html>

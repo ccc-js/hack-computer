@@ -42,6 +42,12 @@ jack.html#prog=Fib&backend=riscv&run=1    # RISCV 跑 Fib 並自動執行
   ◀▶▲▼ 按鍵寫入 KBD 鏡像（Pong 擋板會動），速度滑桿 0..100（預設 60≈1 萬步/幀）。
 - `hdl.html` 除批次模擬外，有「檢視電路圖」：顯示當前 `.hdl` 結構圖，
   可逐層點入子元件直至 Nand/DFF（麵包屑＋SVG＋側欄，支援平移縮放）。
+- `hdl.html` 還有「合成 LUT」浮層：FPGA／ASIC 雙後端的迷你 EDA 流程——
+  階段列 ①RTL→Logic ②Logic Netlist ③Tech-indep Syn（共用）→
+  ④Techmap ⑤Placement ⑥Routing ⑦STA，每階段畫圖＋多行階段報告，
+  可退火動畫重播（FPGA）、切換 FPGA／ASIC 視圖、顯示／隱藏連線、
+  滾輪縮放（0.3–12×）／拖曳平移／雙擊重設，點方塊看邏輯或實體細節
+  （差異最明顯的化簡範例：Inc16 384→224 閘）。
 
 ## 命令列（cwd 在本目錄；語料先複製到 /tmp 再玩，`jack2vm` 會在來源旁寫 `output/`）
 
@@ -106,6 +112,8 @@ node cli/hdl2js.js --dir third_party/courses/01 --dir third_party/courses/02 \
 ```sh
 node --test test/test_vm2riscv.js      # VM→RV32（42）
 node --test test/test_schematic.js     # 電路圖（18）
+node --test test/test_syn_pnr.js       # FPGA 合成/佈局（6）
+node --test test/test_asic.js          # ASIC 合成/佈局 vs NAND 參考（6）
 node --test test/test_emu_pages.js     # 兩模擬器頁（8）
 node --test test/test_hdl_graph_page.js# 電路圖頁端到端（4）
 node --test test/test.js               # 原 Hack 鏈（97，較重）
@@ -135,21 +143,23 @@ static＝`0x11000`＋檔序*`0x400`＋4i；Jack word 位址 W 經 this/that 映�
 ## 目錄結構
 
 ```
-lib/         可共用的核心（hdl/、jack/、vm/、asm/、riscv/；多數附 .md companion）
+lib/         可共用的核心（hdl/、fpga/、asic/、jack/、vm/、asm/、riscv/；多數附 .md companion）
+             hdl/＝HDL 解析∼elab；fpga/＝MicroSyn（NAND→LUT4/DFF）＋MicroPnR（SA 佈局/繞線/STA）；
+             asic/＝AsicSyn（NAND2/INV/MUX2/AOI21/DFF 標準單元映射）＋row-based PnR
 cli/         每支工具的命令列薄包裝（共用參數解析在 cli/cliutil.js）
 tools/       打包與語料（gen_corpus.js、embed.js、browser_*_smoke.js）
 dist/        四個可直接雙擊開啟的網頁（jack/index/rvemu/hdl）＋綴合產物
 Riscv32i/    自研 RV32I 單週期處理器（rv32i.hdl ＋ 測資；語料章節 `06`）
 gen/         鏈路產物與測資（chain、sum、os_src 8 檔、pong）
 third_party/ courses/（課程語料）、rvtools/（rvasm/rvemu，內收自上游）
-_book/       工具程式原理系列（繁體中文教程）
+_html/       工具程式原理系列（繁體中文教程）
 _doc/        版本紀錄（v0.1…v4.0）
 ```
 
 ## 更多文件
 
 - `AGENTS.md`——給 agent 的本目錄精簡指令（含兩處 rvasm 坑與網址規則）。
-- `_book/`——工具程式原理系列，從 [`00-總覽`](_book/00-總覽.md) 讀起。
+- `_html/`——互動電子書系列（繁中）：`eda.html`（合成 LUT）、`hardware.html`（HDL 硬體線）、`software.html`（Jack→VM→asm）、`riscv.html`（RV 全圈）。
 - `_doc/v4.0.md`——最新版本紀錄；`_doc/v0.1…v3.4.md`——歷史版本。
 - `lib/riscv/vm2riscv.js.md`——RV 後端設計細節；其餘 `lib/` 多數也有 `.md` companion。
 - 重建網頁：`node tools/gen_corpus.js && node tools/embed.js`
