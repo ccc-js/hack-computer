@@ -2675,7 +2675,7 @@ const HdlGraph = (() => {
 })();
 
 
-/***** lib/hdl/synthesis.js *****/
+/***** lib/fpga/synthesis.js *****/
 // syn.js — 微型邏輯合成與科技映射器（Micro-Yosys）
 //
 // 流程：
@@ -3086,7 +3086,7 @@ function synthesize(elab, topName, options) {
   return new MicroSyn(options).synthesize(elab, topName);
 }
 
-/***** lib/hdl/pnr.js *****/
+/***** lib/fpga/pnr.js *****/
 // pnr.js — 微型實體佈局與繞線器（Micro-nextpnr）
 //
 // 支援功能：
@@ -3388,6 +3388,460 @@ class MicroPnR {
 function placeAndRoute(netlist, options) {
   return new MicroPnR(options).run(netlist);
 }
+
+/***** lib/asic/synth.js *****/
+// lib/asic/synth.js — ASIC 標準單元合成（Micro-Design Compiler）
+//
+// 與 FPGA 版 `lib/fpga/synthesis.js` 共用前端：先以 MicroSyn 把 ElabChip 展平成
+// 位元級 NAND＋DFF 網表（flattenChip→optimizeGates，與晶片無關），再做技術映射：
+//   NAND2/INV 為基底，外加兩個 peephole 圖樣（MUX2、AOI21）做面積最小化
+//   （碗全樹覆蓋 DP 留待擴充，目前是貪婪圖樣重寫）。
+//
+// 標準單元庫（示意值：面積 µm²、延遲 ns）
+const STDCELL = {
+  INV:   { area: 1.0, delay: 0.08 },
+  NAND2: { area: 2.0, delay: 0.12 },
+  AOI21: { area: 3.2, delay: 0.16 }, // out = !((a & b) | c)
+  MUX2:  { area: 4.0, delay: 0.20 }, // out = s ? a : b
+  DFF:   { area: 8.0, delay: 0.30, setup: 0.15, hold: 0.05, clkq: 0.30 },
+};
+
+class AsicSyn {
+  constructor() {
+    this.lib = STDCELL;
+  }
+
+  /**
+   * NAND/DFF 網表（opt：optimizeGates 輸出）→ 標準單元網表
+   * @param {object} opt { primaryInputs, primaryOutputs, gates }
+   * @param {string} chipName
+   */
+  map(opt, chipName) {
+    const gates = opt.gates;
+    const nets = new Set();
+    for (const g of gates) if (g.type === 'NAND') nets.add(g.out);
+
+    const driverOf = new Map(); // net -> NAND gate
+    for (const g of gates) if (g.type === 'NAND') driverOf.set(g.out, g);
+    const fanout = new Map(); // net -> 使用次數
+    for (const g of gates) {
+      if (g.type !== 'NAND') continue;
+      for (const i of new Set(g.in)) { // 同 gate 自配對（NAND(x,x)）不算多扇出
+        if (nets.has(i)) fanout.set(i, (fanout.get(i) || 0) + 1);
+      }
+    }
+
+    const byOut = new Map(); // NAND gate out 順序索引（評測時用拓撲序）
+    for (const g of gates) if (g.type === 'NAND') byOut.set(g.out, g);
+
+    const isNand = (n) => byOut.has(n);
+    const isInvPair = (n) => {
+      const g = byOut.get(n);
+      return !!g && g.in[0] === g.in[1] && g.in[0] !== '0' && g.in[0] !== '1';
+    };
+    const isInvOf = (x, y) => {
+      const g = byOut.get(x);
+      return !!g && g.in[0] === g.in[1] && g.in[0] === y;
+    };
+    const cmpNet = (x, y) => isInvOf(x, y) || isInvOf(y, x);
+    const sf = (n) => (fanout.get(n) || 0) <= 1; // single-fanout
+
+    // 圖樣 MUX2：d = (a&l) | (b&!l)
+    // 形式：d=NAND(u,v)；u、v 各經一段「單扇出 INV 鏈」（可為 0 級）落至 NAND 閘
+    //       r1=NAND(x1,s1)、r2=NAND(x2,s2)，且 (s1,s2) 互補（其一為另一的 INV 閘）。
+    // 併成 MUX2(in=[s1, x1, x2])，吃掉 d 本體＋兩條 INV 鏈＋r1/r2。
+    const muxPattern = (g) => {
+      const invChainRoot = (net) => {
+        const chain = [];
+        let cur = net;
+        for (;;) {
+          const gg = byOut.get(cur);
+          if (!gg || !isInvPair(cur)) break;
+          if (fanout.get(cur) > 1) return null; // 鏈上節點被別處引用
+          chain.push(cur);
+          cur = gg.in[0];
+        }
+        return { root: cur, chain };
+      };
+      const cands = [];
+      for (const net of g.in) {
+        const c = invChainRoot(net);
+        if (!c) return null;
+        const rg = byOut.get(c.root);
+        if (!rg) return null; // root 必須是 NAND 閘
+        if (fanout.get(c.root) > 1) return null;
+        cands.push(c);
+      }
+      if (cands.length !== 2) return null;
+      const [r1, r2] = cands.map((c) => byOut.get(c.root));
+      const combos = [
+        [r1.in[0], r2.in[0]], [r1.in[0], r2.in[1]],
+        [r1.in[1], r2.in[0]], [r1.in[1], r2.in[1]],
+      ];
+      for (const [s1, s2] of combos) {
+        if (!cmpNet(s1, s2)) continue;
+        const x1 = s1 === r1.in[0] ? r1.in[1] : r1.in[0];
+        const x2 = s2 === r2.in[0] ? r2.in[1] : r2.in[0];
+        const del = [cands[0].root, ...cands[0].chain, cands[1].root, ...cands[1].chain];
+        return { in: [s1, x1, x2], del };
+      }
+      return null;
+    };
+
+    // 圖樣 AOI21：d = (a&b) | c
+    // 形式：d=NAND(n1,n2)，n1=NAND(a,b)=!(a&b)，n2=NAND(c,c)=!c
+    // 併成 AOI21(a,b,c)=!((a&b)|c) 接 INV → d；吃掉 n1、n2（n2 是 c 的 INV cell）
+    const aoiFor = (g) => {
+      const [n1, n2] = g.in;
+      if (!isNand(n1) || !isInvPair(n2)) return null;
+      if (!sf(n1) || !sf(n2)) return null;
+      const g1 = byOut.get(n1);
+      const c = byOut.get(n2).in[0];
+      return { in: [g1.in[0], g1.in[1], c], del: [n1, n2], y: n2 };
+    };
+
+    // 第一 pass：依拓撲序掃描扇出標記決策（feeders 不可重複併用）。
+    // 兩階段：先全體試 MUX2 圖樣（較大收益、鏈較深，若被 AOI 搶走鏈節點會失敗），
+    // 再對剩餘未匹配的 gate 補試 AOI21 圖樣。
+    const usedFeeders = new Set();
+    const dGates = new Set(); // 被圖樣吃掉的 cell-out（feeders + 本體）
+    const tryPattern = (g, make) => {
+      if (g.type !== 'NAND' || g.__pattern) return;
+      const m = make(g);
+      if (!m) return;
+      if (m.del.some((n) => usedFeeders.has(n))) return;
+      for (const n of m.del) usedFeeders.add(n);
+      dGates.add(g.out); // 本體 gate 本身也被圖樣取代
+      for (const n of m.del) dGates.add(n);
+      m.dOut = g.out;
+      g.__pattern = m;
+    };
+    for (const g of gates) tryPattern(g, muxPattern);
+    for (const g of gates) tryPattern(g, aoiFor);
+
+    // 第二 pass：產 cell
+    const cells = [];
+    let cid = 0;
+    const newCell = (type, inNets, out) => {
+      const c = { id: `c_${cid++}`, type, in: inNets, out };
+      cells.push(c);
+      return c;
+    };
+    for (const g of gates) {
+      if (g.type === 'DFF') {
+        newCell('DFF', [g.in[0]], g.out);
+        continue;
+      }
+      const p = g.__pattern;
+      if (p) {
+        if (p.y) {
+          // AOI21：先建立 AOI21（新中間 net），再 INV 回 d
+          const y = `y_aoi_${p.dOut}`;
+          newCell('AOI21', p.in, y);
+          newCell('INV', [y], p.dOut);
+        } else {
+          newCell('MUX2', p.in, p.dOut);
+        }
+        continue;
+      }
+      if (g.in[0] === g.in[1]) newCell('INV', [g.in[0]], g.out);
+      else newCell('NAND2', [g.in[0], g.in[1]], g.out);
+    }
+
+    // cleanup：清掉 fanout 為零的 cell（例如 MUX 併掉後只剩死路的 INV），反覆直到不變
+    const outSet = new Set(opt.primaryOutputs);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const used = new Set(outSet);
+      for (const c of cells) for (const i of c.in) used.add(i);
+      for (let i = cells.length - 1; i >= 0; i--) {
+        const c = cells[i];
+        if (!used.has(c.out)) {
+          cells.splice(i, 1);
+          changed = true;
+        }
+      }
+    }
+
+    // 圖樣的 feeders cell 不產（由於 feeders 的 NAND 已被吃掉）；
+    // 因為 feeders 是「NAND gate 本身」——我們在掃描時不做正向輸出，
+    // 而是用 dGates（被吃掉之 NAND 的 out），等價已達成。
+
+    // 面積／單元統計
+    const byType = {};
+    let area = 0;
+    for (const c of cells) {
+      byType[c.type] = (byType[c.type] || 0) + 1;
+      area += STDCELL[c.type].area;
+    }
+
+    return {
+      chipName,
+      inputs: opt.primaryInputs,
+      outputs: opt.primaryOutputs,
+      cells,
+      stats: {
+        rawGates: gates.length,
+        cellCount: cells.length,
+        areaUm2: Math.round(area * 10) / 10,
+        cellTypeCounts: byType,
+      },
+    };
+  }
+}
+
+/** 依標準單元語意對純組合 cell 網表求值（DFF 不支援，呼叫端需無狀態晶片） */
+function evalCells(cells, env) {
+  const val = new Map(env);
+  val.set('0', 0);
+  val.set('1', 1);
+  const pending = [...cells];
+  for (let progress = true; pending.length > 0 && progress;) {
+    progress = false;
+    for (let i = 0; i < pending.length;) {
+      const c = pending[i];
+      const v = c.in.map((x) => val.get(x));
+      if (v.some((x) => x === undefined)) {
+        i++;
+        continue;
+      }
+    let o;
+      switch (c.type) {
+        case 'INV': o = v[0] ? 0 : 1; break;
+        case 'NAND2': o = (v[0] && v[1]) ? 0 : 1; break;
+        case 'AOI21': o = ((v[0] && v[1]) || v[2]) ? 0 : 1; break;
+        case 'MUX2': o = v[0] ? v[1] : v[2]; break;
+        default: throw new Error(`evalCells 不支援 ${c.type}`);
+      }
+      val.set(c.out, o);
+      pending.splice(i, 1);
+      progress = true;
+    }
+  }
+  if (pending.length > 0) throw new Error('cell 網表求值未收斂');
+  return val;
+}
+
+
+/***** lib/asic/pnr.js *****/
+// lib/asic/pnr.js — ASIC row-based 佈局＋STA（Micro-Innovus）
+//
+// 支援：
+//   1. Row-based 佈局：以拓撲深度（level）成列，DFF 輸出視為新階段（level 重置）。
+//      cell 佔寬 ∝ 面積（列高固定 2.2 µm）。不做最佳化（退火留待擴充）。
+//   2. 線延遲：driver 與 sink cell 幾何距離（µm）× 每 µm 係數；另加 fanout 負載項。
+//   3. STA：
+//      - setup：時鐘週期 T ≥ max(DFF: clkq + 組合路徑延遲 + setup) → F_max = 1000/T
+//      - hold：min(DFF: clkq + 最短組合路徑) ≥ hold → hold slack
+//      - 回溯關鍵路徑（cell id 列表）
+//
+// 單位：area µm²、delay ns、position µm。
+
+
+const ROW_H_UM = 2.2;
+const WIRE_NS_PER_UM = 0.01;   // 每 µm 線延遲（示意）
+const LOAD_NS_PER_SINK = 0.02; // fanout 負載項
+
+class AsicPnR {
+  constructor(options = {}) {
+    this.maxRows = options.maxRows || null;
+  }
+
+  run(netlist) {
+    const placement = this.place(netlist);
+    const timing = this.analyzeTiming(netlist, placement);
+    const stats = { ...netlist.stats };
+    stats.rowCount = placement.rows.length;
+    stats.maxRowWidthUm = Math.round(placement.maxRowWidth * 10) / 10;
+    stats.totalWireUm = Math.round(placement.totalWireUm * 10) / 10;
+    return { placement, timing, stats };
+  }
+
+  /** 拓撲 level 成列 */
+  place(netlist) {
+    const cells = netlist.cells;
+    const driverOf = new Map();
+    for (const c of cells) if (c.type !== 'DFF') driverOf.set(c.out, c);
+
+    const levelOf = new Map();
+    const getLevel = (netName) => {
+      if (levelOf.has(netName)) return levelOf.get(netName);
+      levelOf.set(netName, 0);
+      let lv = 0;
+      const c = driverOf.get(netName);
+      if (c) {
+        const inLv = c.in.map(getLevel).filter((x) => Number.isFinite(x));
+        lv = inLv.length ? Math.max(...inLv) + 1 : 0;
+        if (c.type === 'DFF') lv = 0; // DFF 輸出重置（新 stage）
+      }
+      levelOf.set(netName, lv);
+      return lv;
+    };
+    for (const i of netlist.inputs) getLevel(i);
+    for (const c of cells) getLevel(c.out);
+
+    const rows = [];
+    for (const c of cells) {
+      const lv = levelOf.get(c.out) || 0;
+      if (!rows[lv]) rows[lv] = [];
+      rows[lv].push(c);
+    }
+    for (let i = 0; i < rows.length; i++) if (!rows[i]) rows[i] = [];
+
+    let xBase = 0;
+    rows.forEach((row, ri) => {
+      let x = 0;
+      for (const c of row) {
+        c.row = ri;
+        c.w = Math.max(1.0, Math.round((STDCELL[c.type].area / ROW_H_UM) * 10) / 10);
+        c.x = x;
+        x += c.w;
+      }
+      if (x > xBase) xBase = x;
+    });
+    const maxRowWidth = xBase;
+
+    // 總線長（Σ driver↔sink µm）
+    const cellAtOut = new Map();
+    for (const row of rows) for (const c of row) cellAtOut.set(c.out, c);
+    const posOfCell = new Map();
+    for (const row of rows) {
+      for (const c of row) posOfCell.set(c.id, { x: c.x + c.w / 2, row: c.row });
+    }
+    const sinkCellOf = (netName) => {
+      // 找出把 netName 當輸入的 cells
+      const sinks = [];
+      for (const row of rows) for (const c of row) {
+        if (c.in.includes(netName)) sinks.push(c);
+      }
+      return sinks;
+    };
+    let totalWire = 0;
+    for (const [net, drv] of cellAtOut) {
+      const p = posOfCell.get(drv.id);
+      for (const sink of sinkCellOf(net)) {
+        if (sink === drv) continue;
+        const q = posOfCell.get(sink.id);
+        if (!p || !q) continue;
+        totalWire += Math.abs(p.x - q.x) + Math.abs(p.row - q.row) * ROW_H_UM;
+      }
+      // 輸出 PO 的 sink（無 cell）忽略
+    }
+
+    return { rows, rowHeightUm: ROW_H_UM, maxRowWidth, totalWireUm: totalWire, posOfCell, cellAtOut };
+  }
+
+  /** STA */
+  analyzeTiming(netlist, placement) {
+    const { posOfCell, cellAtOut, rowHeightUm } = placement;
+    const inSet = new Set(netlist.inputs);
+
+    const distance = (fromCell, toCell) => {
+      if (!fromCell || !toCell) return 0;
+      const p = posOfCell.get(fromCell.id);
+      const q = posOfCell.get(toCell.id);
+      if (!p || !q) return 0;
+      return Math.abs(p.x - q.x) + Math.abs(p.row - q.row) * rowHeightUm;
+    };
+    const fansOf = new Map();
+    for (const c of netlist.cells) {
+      for (const i of c.in) {
+        if (!fansOf.has(i)) fansOf.set(i, []);
+        fansOf.get(i).push(c);
+      }
+    }
+
+    const walk = (min) => {
+      // 回傳 net → arrival（min 與否決定 max/min 傳播）
+      const arr = new Map();
+      const get = (net) => {
+        if (arr.has(net)) return arr.get(net);
+        arr.set(net, Number.POSITIVE_INFINITY); // 防迴圈
+        let v;
+        const c = cellAtOut.get(net);
+        if (!c) {
+          v = inSet.has(net) ? 0 : 0; // PI=0；未驅動（常數等）=0
+        } else if (c.type === 'DFF') {
+          v = STDCELL.DFF.clkq;
+        } else {
+          const base = STDCELL[c.type].delay;
+          const inArrs = c.in.map((i) => get(i) + LOAD_NS_PER_SINK + WIRE_NS_PER_UM * distance(cellAtOut.get(i), c));
+          v = (min ? Math.min(...inArrs) : Math.max(...inArrs)) + base + LOAD_NS_PER_SINK;
+        }
+        arr.set(net, v);
+        return v;
+      };
+      for (const i of netlist.inputs) get(i);
+      for (const c of netlist.cells) get(c.out);
+      return arr;
+    };
+
+    const arrMax = walk(false);
+    const arrMin = walk(true);
+
+    // setup：DFF.D 的 arrival（inside 已含 clkq）+ setup
+    let criticalNs = 0;
+    let critDff = null;
+    for (const c of netlist.cells) {
+      if (c.type !== 'DFF') continue;
+      const t = arrMax.get(c.in[0]) + STDCELL.DFF.setup;
+      if (t > criticalNs) { criticalNs = t; critDff = c; }
+    }
+    // 純組合：以 PI→PO 最長路徑為 critical path（無時脈邊界）
+    if (!netlist.cells.some((c) => c.type === 'DFF')) {
+      for (const o of netlist.outputs) {
+        if (o === '0' || o === '1') continue;
+        const t = arrMax.get(o);
+        if (t > criticalNs) { criticalNs = t; critDff = null; }
+      }
+    }
+
+    // hold：DFF→DFF 最短組合路徑（clkq + min + hold 需要）
+    let holdPathNs = Infinity;
+    let holdDff = null;
+    for (const c of netlist.cells) {
+      if (c.type !== 'DFF') continue;
+      const t = arrMin.get(c.in[0]);
+      if (!Number.isFinite(t)) continue; // 純 PI 路徑不屬於 R2R hold
+      if (t < holdPathNs) { holdPathNs = t; holdDff = c; }
+    }
+    const holdSlack = holdDff ? holdPathNs - STDCELL.DFF.hold : null;
+
+    // 關鍵路徑回溯（選 arrival 最大的輸入來源 cell）
+    const path = [];
+    let cur = critDff;
+    while (cur) {
+      path.unshift({ cell: cur.id, type: cur.type, out: cur.out });
+      if (cur.type === 'DFF') break;
+      let best = null;
+      let bestT = -1;
+      for (const i of cur.in) {
+        const d = cellAtOut.get(i);
+        const t = d ? arrMax.get(i) : 0; // PI 來源視為 0
+        if (t >= bestT) { bestT = t; best = d; }
+      }
+      cur = best && best.type !== 'DFF' ? best : null;
+      if (best && best.type === 'DFF') { path.unshift({ cell: best.id, type: best.type, out: best.out }); break; }
+    }
+
+    const criticalPathNs = criticalNs > 0 ? criticalNs : null;
+    const fmaxMHz = criticalPathNs ? Math.round((1000 / criticalPathNs) * 10) / 10 : null;
+
+    return {
+      criticalPath: path,
+      criticalPathNs: criticalPathNs ? Math.round(criticalPathNs * 1000) / 1000 : null,
+      fmaxMHz,
+      holdSlackNs: holdSlack === null ? null : Math.round(holdSlack * 100) / 100,
+      holdPathNs: holdDff ? Math.round(holdPathNs * 1000) / 1000 : null,
+    };
+  }
+}
+
+function asicPlaceAndRoute(cellNetlist, options) {
+  return new AsicPnR(options).run(cellNetlist);
+}
+
 
 /***** lib/hdl/codegen.js *****/
 // HackHDL → JavaScript 程式碼產生器（對應 _eda/hdl2rs/src/gen.rs）
@@ -5792,5 +6246,8 @@ return { assemble, disassemble, Emulator };
     generateJs, topClassExpr, pinSan,
     parseScript, run,
     TopModel,
+  };
+  win.HackAsic = {
+    STDCELL, AsicSyn, evalCells, AsicPnR, asicPlaceAndRoute,
   };
 })(window);

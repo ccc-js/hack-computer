@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 
 import { parseHdl } from '../lib/hdl/parser.js';
 import { elab, loadLibrary, mergeLibs } from '../lib/hdl/elab.js';
-import { MicroSyn } from '../lib/hdl/synthesis.js';
-import { MicroPnR } from '../lib/hdl/pnr.js';
+import { MicroSyn } from '../lib/fpga/synthesis.js';
+import { MicroPnR } from '../lib/fpga/pnr.js';
 
 const COURSES = 'third_party/courses';
 

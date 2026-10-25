@@ -44,8 +44,10 @@ const libs = [
   'lib/hdl/parser.js',
   'lib/hdl/elab.js',
   'lib/hdl/schematic.js',
-  'lib/hdl/synthesis.js',
-  'lib/hdl/pnr.js',
+  'lib/fpga/synthesis.js',
+  'lib/fpga/pnr.js',
+  'lib/asic/synth.js',
+  'lib/asic/pnr.js',
   'lib/hdl/codegen.js',
   'lib/rt/fmt.js',
   'lib/rt/tst.js',
@@ -108,6 +110,9 @@ const exportsBlock = `(function (win) {
     generateJs, topClassExpr, pinSan,
     parseScript, run,
     TopModel,
+  };
+  win.HackAsic = {
+    STDCELL, AsicSyn, evalCells, AsicPnR, asicPlaceAndRoute,
   };
 })(window);`;
 

@@ -190,8 +190,8 @@ describe('schematic dist 整合', () => {
     assert.match(h, /id="crumbs"/);
     assert.match(h, /id="graphSvgWrap"/);
     assert.match(h, /id="graphSide"/);
-    assert.match(h, /embed\.js\?v=19/);
-    assert.match(h, /hdl\.js\?v=22/);
+    assert.match(h, /embed\.js\?v=20/);
+    assert.match(h, /hdl\.js\?v=24/);
   });
 
   it('hdl.html 有平移縮放控制（pan 容器＋縮放鈕）', () => {
@@ -224,7 +224,7 @@ describe('schematic dist 整合', () => {
 
   it('其餘三頁的 embed 引用同步＋1', () => {
     for (const p of ['index.html', 'jack.html', 'rvemu.html']) {
-      assert.match(read(p), /embed\.js\?v=19/, p);
+      assert.match(read(p), /embed\.js\?v=20/, p);
     }
   });
 });

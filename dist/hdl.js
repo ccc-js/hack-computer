@@ -569,6 +569,8 @@
       replay: document.getElementById('synReplay'),
       finalBtn: document.getElementById('synFinal'),
       reportBtn: document.getElementById('synReport'),
+      viewFpga: document.getElementById('viewFpga'),
+      viewAsic: document.getElementById('viewAsic'),
       lutArea: document.getElementById('fpgaLutArea'),
       reportArea: document.getElementById('fpgaReportArea'),
       reportText: document.getElementById('synReportText'),
@@ -582,6 +584,7 @@
     let animIdx = 0;
     let selectedCell = null;
     let cellPx = 24, padPx = 0; // 幾何參數（draw 前計算）
+    let asicMode = false; // true＝ASIC 標準單元視圖
 
     function currentLibAndTop() {
       let lib = fullLib();
@@ -613,16 +616,26 @@
         const snapshots = [];
         const pnr = new H.MicroPnR({ onSample: (rec) => snapshots.push(rec) });
         const result = pnr.run(netlist);
+        let asic = null, asicErr = null;
+        try {
+          const AA = window.HackAsic;
+          const acNetlist = new AA.AsicSyn().map(opt, top);
+          const acResult = AA.asicPlaceAndRoute(acNetlist);
+          asic = { netlist: acNetlist, result: acResult, cellById: Object.fromEntries(acNetlist.cells.map((c) => [c.id, c])) };
+        } catch (e2) {
+          asicErr = `ASIC 流程失敗：${e2.message}`;
+        }
         const cellById = {};
         for (const lut of netlist.luts) cellById[lut.id] = lut;
         for (const dff of netlist.dffs) cellById[dff.id] = dff;
-        S = { netlist, result, snapshots, cellById, top, nets: collectNets(netlist), stages: { flat, opt } };
+        S = { netlist, result, snapshots, cellById, top, nets: collectNets(netlist), stages: { flat, opt }, asic, asicErr };
+        updateViewButtons();
         mode = 'final';
         selectedCell = null;
         stopAnim();
         sEl.overlay.classList.remove('hidden');
         updateStats();
-        fillLutList(null);
+        fillCellList(null);
         showCellInfo(null);
         resize();
         draw();
@@ -635,6 +648,7 @@
 
     function updateStats() {
       const { netlist, result } = S;
+      if (asicMode && S.asic) { updateAsicStats(); return; }
       const synthLine = `合成：<b>${netlist.luts.length}</b> 顆 LUT4 ＋ <b>${netlist.dffs.length}</b> 顆 DFF（原始 ${netlist.stats.rawGates} 閘）`;
       const p = result.placement;
       const pads = p.padPos.size;
@@ -648,7 +662,77 @@
         + `｜<span class="cr">關鍵路徑 <b>${st.criticalPathNs}</b> ns</span>`;
     }
 
-    // ---- 幾何 ----
+    // ---- ASIC 標準單元視圖 ----
+    function updateViewButtons() {
+      const ok = !!(S && S.asic);
+      sEl.viewAsic.disabled = !ok;
+      sEl.viewAsic.title = ok ? 'ASIC 視圖：NAND2/INV/MUX2/AOI21/DFF 標準單元、row-based 佈局' : '（此晶片 ASIC 流程失敗，不可用）';
+      sEl.viewFpga.classList.toggle('cur', !asicMode);
+      sEl.viewAsic.classList.toggle('cur', asicMode);
+    }
+
+    function asicGeom() {
+      const p = S.asic.result.placement;
+      const W = sEl.canvas.width, Hc = sEl.canvas.height;
+      const R = Math.max(1, p.rows.length);
+      // 留出頂部列高（右上 FPGA／ASIC 切換列）不與 cell 重疊
+      const topGap = 56;
+      const rowH = Math.min(26, Math.max(6, Math.floor((Hc - topGap - 24) / R)));
+      const availW = Math.max(120, W - 90);
+      const pxUm = Math.max(0.02, availW / Math.max(1, p.maxRowWidth));
+      return { rowH, pxUm, xOff: 64, yOff: topGap + 6, rows: p.rows, widthUm: p.maxRowWidth };
+    }
+    function updateAsicStats() {
+      const { netlist, result } = S.asic;
+      const st = netlist.stats, tm = result.timing, rs = result.stats;
+      const types = Object.entries(st.cellTypeCounts).map(([k, v]) => `${k}×${v}`).join(' ');
+      sEl.stats.innerHTML =
+        `<b>ASIC 標準單元</b>：${st.cellCount} 顆（原始 ${st.rawGates} 閘）〈${types}〉`
+        + `｜面積 <b>${st.areaUm2}</b> µm²｜列 <b>${rs.rowCount}</b>｜線長 <b>${rs.totalWireUm}</b> µm`
+        + `｜<span class="cr">F<sub>max</sub> ≈ <b>${tm.fmaxMHz ?? '—'}</b> MHz</span>`
+        + `｜<span class="cr">hold slack <b>${tm.holdSlackNs ?? '—'}</b> ns</span>`
+        + (S.asicErr ? `｜<span class="cr">${escapeHtml(S.asicErr)}</span>` : '');
+    }
+
+    const ASIC_COL = { INV: '#7f8ea3', NAND2: '#a86ea0', MUX2: '#4fae7f', AOI21: '#c98a3d', DFF: '#1d4a63' };
+
+    function drawAsic(ctx) {
+      const { rowH, pxUm, xOff, yOff, rows } = asicGeom();
+      const critList = S.asic.result.timing.criticalPath;
+      const critOuts = new Set(critList.map((c) => c.out));
+      ctx.strokeStyle = '#232b36'; ctx.lineWidth = 1;
+      rows.forEach((r, i) => {
+        ctx.beginPath();
+        ctx.moveTo(xOff - 54, yOff + i * rowH);
+        ctx.lineTo(xOff - 54 + S.asic.result.placement.maxRowWidth * pxUm + 20, yOff + i * rowH);
+        ctx.stroke();
+        ctx.fillStyle = '#63768c'; ctx.font = '9px monospace';
+        ctx.fillText(`row${i}`, 8, yOff + i * rowH + rowH - 4);
+      });
+      for (const Ai of rows) {
+        for (const c of Ai) {
+          const x = xOff + c.x * pxUm;
+          const y = yOff + c.row * rowH;
+          const w = Math.max(3, c.w * pxUm - 1);
+          const h = rowH - 2;
+          ctx.fillStyle = ASIC_COL[c.type] || '#888';
+          ctx.fillRect(x, y, w, h);
+          const isCrit = critOuts.has(c.out);
+          ctx.strokeStyle = c.id === selectedCell ? '#ffd479' : (isCrit ? '#ff5d47' : '#0d1218');
+          ctx.lineWidth = c.id === selectedCell ? 2 : isCrit ? 1.6 : 1;
+          ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
+          ctx.lineWidth = 1;
+          if (w >= 26 && rowH >= 12) {
+            ctx.fillStyle = '#e8edf4'; ctx.font = '9px monospace';
+            ctx.fillText(c.type, x + 2, y + h - 2);
+          }
+        }
+      }
+      // 標題（畫在切換列下方左側，避免被按鈕遮住）
+      ctx.fillStyle = '#9fb2c8'; ctx.font = '11px monospace';
+      const st = S.asic.netlist.stats;
+      ctx.fillText(`ASIC ${S.asic.netlist.chipName}：${st.cellCount} cells / ${st.areaUm2} µm²（cell 寬 ∝ 面積，列高固定 2.2 µm）`, 8, 30);
+    }
     function resize() {
       const r = sEl.wrap.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
@@ -709,6 +793,7 @@
     function draw() {
       const ctx = sEl.canvas.getContext('2d');
       ctx.clearRect(0, 0, sEl.canvas.width, sEl.canvas.height);
+      if (asicMode && S.asic) return drawAsic(ctx);
       if (!S || mode === 'anim') return drawAnimFrame(ctx);
       drawFinal(ctx);
     }
@@ -868,6 +953,21 @@
     }
 
     // ---- 側欄 ----
+    function fillCellList(sel) {
+      if (asicMode && S.asic) return fillCellListAsic(sel);
+      fillLutList(sel);
+    }
+
+    function fillCellListAsic(sel) {
+      const rows = S.asic.netlist.cells.map((c) =>
+        `<tr${sel === c.id ? ' class="sel"' : ''} data-cell="${c.id}"><td class="c1">${c.id}</td><td>${c.type}</td><td>${c.w}µm</td><td>${escapeHtml(c.out.length > 12 ? c.out.slice(0, 12) + '…' : c.out)}</td></tr>`
+      );
+      sEl.luts.innerHTML = rows.join('');
+      for (const tr of sEl.luts.querySelectorAll('tr')) {
+        tr.onclick = () => showCellInfo(tr.dataset.cell);
+      }
+    }
+
     function fillLutList(sel) {
       const { netlist } = S;
       const rows = [];
@@ -903,6 +1003,7 @@
     function showCellInfo(cellId) {
       selectedCell = cellId;
       if (!S) return;
+      if (asicMode && S.asic) return showCellInfoAsic(cellId);
       const cell = cellId ? S.cellById[cellId] : null;
       if (!cell) {
         sEl.selTitle.textContent = 'LUT / DFF';
@@ -922,6 +1023,25 @@
           + truthTableHtml(cell.inputs, cell.init)
           + `<div style="color:#9fb2c8;margin-top:6px">真值表列＝輸入組合，位元 i ↔ 輸入表第 i 欄。</div>`;
       }
+      draw();
+    }
+
+    function showCellInfoAsic(cellId) {
+      const cell = cellId ? S.asic.cellById[cellId] : null;
+      if (!cell) {
+        sEl.selTitle.textContent = 'ASIC cell';
+        sEl.selBody.innerHTML = `<div style="color:#9fb2c8">點列內 cell 可看標準單元細節（延遲／面積／接線）。</div>`;
+        fillCellListAsic(null);
+        draw();
+        return;
+      }
+      fillCellListAsic(cellId);
+      const A = window.HackAsic;
+      const sc = A.STDCELL[cell.type];
+      sEl.selTitle.textContent = `${cell.id}（${cell.type} / row${cell.row}）`;
+      sEl.selBody.innerHTML =
+        `<div>out = ${escapeHtml(cell.out)}<br>in = ${cell.in.map((i) => escapeHtml(i)).join(', ')}</div>`
+        + `<div style="color:#9fb2c8;margin-top:6px">延遲 ${sc.delay} ns、面積 ${sc.area} µm²${sc.setup != null ? `、setup ${sc.setup} ns` : ''}${sc.clkq != null ? `、clk-q ${sc.clkq} ns` : ''}。</div>`;
       draw();
     }
 
@@ -1017,17 +1137,65 @@
           '',
           `// 統計：raw ${netlist.stats.rawGates} 閘 → LUT ${netlist.stats.lutCount}＋DFF ${netlist.stats.dffCount}`,
         ];
+        // ASIC 標準單元段落
+        if (S.asic) {
+          const an = S.asic.netlist, art = S.asic.result;
+          const byType = an.stats.cellTypeCounts;
+          lines.push(
+            '',
+            `// ============ ASIC：標準單元映射（micro-yosys-asic）============`,
+            `// 晶片 ${an.chipName}：${an.stats.rawGates} NAND → ${an.stats.cellCount} cells（面積 ${an.stats.areaUm2} µm²，official delay 模型 = cell + 0.02·fanout + 0.01·wire µm）`,
+            `// 各類 cell：${Object.entries(byType).map(([k, v]) => `${k}×${v}`).join('  ')}`,
+            '',
+            'CELLS:',
+            ...an.cells.map((c) => `${c.id}  ${c.type.padEnd(6)}  w=${String(c.w).padEnd(5)}  row${String(c.row).padEnd(4)}  in=(${c.in.join(',')})  out=${c.out}`),
+            '',
+            `// 佈局：${art.stats.rowCount} 列（列高 2.2 µm）、最寬列 ${art.stats.maxRowWidthUm} µm、線長 ~${art.stats.totalWireUm} µm`,
+            `// STA：critical path ${art.timing.criticalPathNs} ns（Fmax ≈ ${art.timing.fmaxMHz} MHz）、hold slack ${art.timing.holdSlackNs ?? '—'} ns`,
+            `// 關鍵路徑：${art.timing.criticalPath.map((c) => `${c.cell}(${c.type})`).join(' → ')}`,
+          );
+        } else if (S.asicErr) {
+          lines.push('', `// ASIC：${S.asicErr}`);
+        }
         sEl.reportText.textContent = lines.join('\n');
       }
     };
-    sEl.replay.onclick = startAnim;
+    sEl.replay.onclick = () => { if (asicMode) return; startAnim(); };
     sEl.finalBtn.onclick = () => { stopAnim(); mode = 'final'; sEl.replay.textContent = '▶ 退火動畫'; draw(); };
+    const setView = (aimAsic) => {
+      if (!S) return;
+      if (aimAsic && !S.asic) return;
+      asicMode = aimAsic;
+      if (asicMode) { stopAnim(); mode = 'final'; selectedCell = null; }
+      updateViewButtons();
+      updateStats();
+      fillCellList(null);
+      showCellInfo(null);
+      resize();
+    };
+    sEl.viewFpga.onclick = () => setView(false);
+    sEl.viewAsic.onclick = () => setView(true);
     sEl.canvas.onclick = (ev) => {
       if (!S) return;
       const r = sEl.canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       const cx = (ev.clientX - r.left) * dpr;
       const cy = (ev.clientY - r.top) * dpr;
+      if (asicMode && S.asic) {
+        const { rowH, pxUm, xOff, yOff, rows } = asicGeom();
+        let hit = null;
+        for (const Ai of rows) {
+          for (const c of Ai) {
+            const x = xOff + c.x * pxUm;
+            const y = yOff + c.row * rowH;
+            const w = Math.max(3, c.w * pxUm - 1);
+            if (cx >= x && cx <= x + w && cy >= y && cy <= y + rowH - 2) { hit = c.id; break; }
+          }
+          if (hit) break;
+        }
+        showCellInfo(hit);
+        return;
+      }
       const g = geom();
       const gx = Math.floor((cx - g.ox) / g.cellPx) - 1;
       const gy = Math.floor((cy - g.oy) / g.cellPx) - 1;
